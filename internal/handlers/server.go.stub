@@ -1,0 +1,84 @@
+// Copy this file to server.go after running `make generate`, then replace the
+// TODO responses with real service calls.
+//
+// This example assumes oapi-codegen generated strict-server request/response
+// objects from api/openapi.yaml. If generator names drift, let the compiler be
+// the source of truth and adjust the signatures to match internal/api.
+
+package handlers
+
+import (
+	"context"
+
+	"example.com/go-game-server/internal/api"
+)
+
+var _ api.StrictServerInterface = (*Server)(nil)
+
+type Server struct{}
+
+func NewServer() *Server { return &Server{} }
+
+func (s *Server) GetHealth(ctx context.Context, request api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
+	return api.GetHealth200JSONResponse{Status: "ok", Version: "0.1.0"}, nil
+}
+
+func (s *Server) Login(ctx context.Context, request api.LoginRequestObject) (api.LoginResponseObject, error) {
+	// TODO: validate credentials, issue access and refresh JWTs.
+	return nil, nil
+}
+
+func (s *Server) RefreshToken(ctx context.Context, request api.RefreshTokenRequestObject) (api.RefreshTokenResponseObject, error) {
+	// TODO: validate refresh token and issue replacement tokens.
+	return nil, nil
+}
+
+func (s *Server) Logout(ctx context.Context, request api.LogoutRequestObject) (api.LogoutResponseObject, error) {
+	// TODO: revoke refresh token/session family.
+	return nil, nil
+}
+
+func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api.GetMeResponseObject, error) {
+	// TODO: read auth.Claims from context and return user details.
+	return nil, nil
+}
+
+func (s *Server) ListGames(ctx context.Context, request api.ListGamesRequestObject) (api.ListGamesResponseObject, error) {
+	// TODO: list games visible to the authenticated user.
+	return nil, nil
+}
+
+func (s *Server) CreateGame(ctx context.Context, request api.CreateGameRequestObject) (api.CreateGameResponseObject, error) {
+	// TODO: require GM/admin and create a game.
+	return nil, nil
+}
+
+func (s *Server) GetGame(ctx context.Context, request api.GetGameRequestObject) (api.GetGameResponseObject, error) {
+	// TODO: enforce object-level authorization and return game.
+	return nil, nil
+}
+
+func (s *Server) ListTurns(ctx context.Context, request api.ListTurnsRequestObject) (api.ListTurnsResponseObject, error) {
+	// TODO: enforce access to game and return turns.
+	return nil, nil
+}
+
+func (s *Server) GetTurn(ctx context.Context, request api.GetTurnRequestObject) (api.GetTurnResponseObject, error) {
+	// TODO: enforce access to game/turn and return turn.
+	return nil, nil
+}
+
+func (s *Server) ValidateOrders(ctx context.Context, request api.ValidateOrdersRequestObject) (api.ValidateOrdersResponseObject, error) {
+	// TODO: parse and validate orders without creating a submission.
+	return nil, nil
+}
+
+func (s *Server) SubmitOrders(ctx context.Context, request api.SubmitOrdersRequestObject) (api.SubmitOrdersResponseObject, error) {
+	// TODO: validate, authorize faction ownership, and create a submission.
+	return nil, nil
+}
+
+func (s *Server) GetOrderSubmission(ctx context.Context, request api.GetOrderSubmissionRequestObject) (api.GetOrderSubmissionResponseObject, error) {
+	// TODO: enforce access to submission and return it.
+	return nil, nil
+}

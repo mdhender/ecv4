@@ -1,0 +1,587 @@
+openapi: 3.0.3
+info:
+  title: Experimental Game Server API
+  version: 0.1.0
+  description: |
+    Contract-first REST API for an experimental Go game web server.
+
+    This API is intentionally small and churn-friendly. Treat this file as the
+    public contract for player-written clients. Server DTOs and handler stubs are
+    generated from this file with oapi-codegen.
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+tags:
+  - name: System
+    description: Health and service metadata
+  - name: Auth
+    description: Authentication and token lifecycle
+  - name: Me
+    description: Authenticated user context
+  - name: Games
+    description: Game catalog and setup
+  - name: Turns
+    description: Turn metadata and state
+  - name: Orders
+    description: Order validation, submission, and status
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      operationId: getHealth
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: Service is running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Exchange credentials for JWT tokens
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              demo:
+                value:
+                  username: demo-player
+                  password: demo-password
+      responses:
+        '200':
+          description: Login succeeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshToken
+      summary: Exchange a refresh token for a new access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Token refresh succeeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoke the presented refresh token or session family
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204':
+          description: Logout accepted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me:
+    get:
+      tags: [Me]
+      operationId: getMe
+      summary: Get the authenticated user context
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /games:
+    get:
+      tags: [Games]
+      operationId: listGames
+      summary: List games visible to the current user
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/GameStatus'
+      responses:
+        '200':
+          description: Visible games
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGamesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Games]
+      operationId: createGame
+      summary: Create a game
+      description: Requires an admin or GM role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGameRequest'
+      responses:
+        '201':
+          description: Game created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Game'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /games/{gameId}:
+    parameters:
+      - $ref: '#/components/parameters/GameId'
+    get:
+      tags: [Games]
+      operationId: getGame
+      summary: Get a game by id
+      responses:
+        '200':
+          description: Game details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Game'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /games/{gameId}/turns:
+    parameters:
+      - $ref: '#/components/parameters/GameId'
+    get:
+      tags: [Turns]
+      operationId: listTurns
+      summary: List turns for a game
+      responses:
+        '200':
+          description: Turns for the game
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTurnsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /games/{gameId}/turns/{turnId}:
+    parameters:
+      - $ref: '#/components/parameters/GameId'
+      - $ref: '#/components/parameters/TurnId'
+    get:
+      tags: [Turns]
+      operationId: getTurn
+      summary: Get a turn by id
+      responses:
+        '200':
+          description: Turn details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Turn'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /games/{gameId}/turns/{turnId}/orders:validate:
+    parameters:
+      - $ref: '#/components/parameters/GameId'
+      - $ref: '#/components/parameters/TurnId'
+    post:
+      tags: [Orders]
+      operationId: validateOrders
+      summary: Validate an order set without submitting it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrdersRequest'
+            examples:
+              basic:
+                value:
+                  factionId: 7
+                  orders: |
+                    UNIT 101 MOVE N
+                    UNIT 102 SCOUT E
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderValidationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /games/{gameId}/turns/{turnId}/orders:submit:
+    parameters:
+      - $ref: '#/components/parameters/GameId'
+      - $ref: '#/components/parameters/TurnId'
+    post:
+      tags: [Orders]
+      operationId: submitOrders
+      summary: Submit an order set for processing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrdersRequest'
+      responses:
+        '201':
+          description: Submission created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderSubmission'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /games/{gameId}/turns/{turnId}/orders/{submissionId}:
+    parameters:
+      - $ref: '#/components/parameters/GameId'
+      - $ref: '#/components/parameters/TurnId'
+      - $ref: '#/components/parameters/SubmissionId'
+    get:
+      tags: [Orders]
+      operationId: getOrderSubmission
+      summary: Get an order submission
+      responses:
+        '200':
+          description: Submission details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderSubmission'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    GameId:
+      name: gameId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    TurnId:
+      name: turnId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    SubmissionId:
+      name: submissionId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing, expired, or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated user is not allowed to access this resource
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Request conflicts with current game state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+          example: 0.1.0
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+          format: password
+    RefreshTokenRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          minLength: 1
+    LogoutRequest:
+      type: object
+      properties:
+        refreshToken:
+          type: string
+          minLength: 1
+    AuthTokens:
+      type: object
+      required: [accessToken, refreshToken, tokenType, expiresInSeconds]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        tokenType:
+          type: string
+          enum: [Bearer]
+        expiresInSeconds:
+          type: integer
+          minimum: 1
+          example: 900
+    MeResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+    User:
+      type: object
+      required: [id, username, roles]
+      properties:
+        id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        displayName:
+          type: string
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+    Role:
+      type: string
+      enum: [player, gm, admin]
+    GameStatus:
+      type: string
+      enum: [draft, recruiting, active, paused, complete, archived]
+    Game:
+      type: object
+      required: [id, slug, name, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+        slug:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]*$'
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/GameStatus'
+        description:
+          type: string
+    CreateGameRequest:
+      type: object
+      required: [slug, name]
+      properties:
+        slug:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]*$'
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+    ListGamesResponse:
+      type: object
+      required: [games]
+      properties:
+        games:
+          type: array
+          items:
+            $ref: '#/components/schemas/Game'
+    TurnStatus:
+      type: string
+      enum: [open, locked, processing, published]
+    Turn:
+      type: object
+      required: [id, gameId, label, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+        gameId:
+          type: integer
+          format: int64
+        label:
+          type: string
+          example: Spring 901
+        status:
+          $ref: '#/components/schemas/TurnStatus'
+        ordersDueAt:
+          type: string
+          format: date-time
+          nullable: true
+    ListTurnsResponse:
+      type: object
+      required: [turns]
+      properties:
+        turns:
+          type: array
+          items:
+            $ref: '#/components/schemas/Turn'
+    OrdersRequest:
+      type: object
+      required: [factionId, orders]
+      properties:
+        factionId:
+          type: integer
+          format: int64
+          minimum: 1
+        orders:
+          type: string
+          minLength: 1
+    OrderValidationResult:
+      type: object
+      required: [ok, messages]
+      properties:
+        ok:
+          type: boolean
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderMessage'
+    OrderMessage:
+      type: object
+      required: [severity, message]
+      properties:
+        severity:
+          type: string
+          enum: [info, warning, error]
+        line:
+          type: integer
+          minimum: 1
+        message:
+          type: string
+    OrderSubmission:
+      type: object
+      required: [id, gameId, turnId, factionId, status, submittedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        gameId:
+          type: integer
+          format: int64
+        turnId:
+          type: integer
+          format: int64
+        factionId:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [submitted, accepted, rejected, superseded]
+        submittedAt:
+          type: string
+          format: date-time
+        validation:
+          $ref: '#/components/schemas/OrderValidationResult'
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: unauthorized
+        message:
+          type: string
+          example: access token is missing or invalid
+        requestId:
+          type: string
