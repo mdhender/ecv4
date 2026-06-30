@@ -8,6 +8,7 @@
 # Local build products
 /bin/
 /dist/
+/game-server
 *.out
 *.test
 

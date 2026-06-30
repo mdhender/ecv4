@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 	ecv4 "github.com/mdhender/ecv4"
 	"github.com/mdhender/ecv4/internal/config"
+	"github.com/mdhender/ecv4/internal/database"
 	"github.com/mdhender/ecv4/internal/httputil"
 )
 
@@ -48,6 +50,44 @@ func main() {
 		},
 	}
 	rootCmd.Subcommands = append(rootCmd.Subcommands, versionCmd)
+
+	databaseFlags := ff.NewFlagSet("database").SetParent(rootFlags)
+	databaseCmd := &ff.Command{
+		Name:      "database",
+		Usage:     "game-server database <SUBCOMMAND>",
+		ShortHelp: "manage the game database",
+		Flags:     databaseFlags,
+	}
+
+	databaseCreateCmd := &ff.Command{
+		Name:      "create",
+		Usage:     "game-server database create <PATH>",
+		ShortHelp: "create a new database in an existing directory",
+		LongHelp: "Create a new " + database.FileName + " database file inside PATH.\n" +
+			"PATH must be an existing directory; it is never created.\n" +
+			"The command fails if the database file already exists.\n" +
+			"\n" +
+			"A PATH of " + database.MemoryPath + " builds an ephemeral in-memory\n" +
+			"database to verify the migrations apply; nothing is written to disk.",
+		Flags: ff.NewFlagSet("create").SetParent(databaseFlags),
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) != 1 {
+				return fmt.Errorf("create requires exactly one PATH argument")
+			}
+			path := args[0]
+			if err := database.Create(ctx, path); err != nil {
+				return err
+			}
+			if path == database.MemoryPath {
+				fmt.Println("verified migrations against an in-memory database (nothing persisted)")
+			} else {
+				fmt.Printf("created %s\n", filepath.Join(path, database.FileName))
+			}
+			return nil
+		},
+	}
+	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseCreateCmd)
+	rootCmd.Subcommands = append(rootCmd.Subcommands, databaseCmd)
 
 	switch err := rootCmd.ParseAndRun(ctx, os.Args[1:]); {
 	case err == nil:
