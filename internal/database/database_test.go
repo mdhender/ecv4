@@ -2,9 +2,11 @@ package database
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"zombiezen.com/go/sqlite"
+	"zombiezen.com/go/sqlite/sqlitemigration"
 	"zombiezen.com/go/sqlite/sqlitex"
 )
 
@@ -245,6 +247,140 @@ func TestForeignKeysEnforcedOnSharedMemory(t *testing.T) {
 		VALUES(1, 'a@example.com', 0, 1, 'h');`)
 	wantErr(t, conn, "missing game fk", `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
 		VALUES(404, 1, 'player_1', 0, 1);`)
+}
+
+func TestOpenRoundTripsWithCreate(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	if err := Create(ctx, dir); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	pool, closeDB, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := closeDB(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}()
+
+	conn, err := pool.Take(ctx)
+	if err != nil {
+		t.Fatalf("take conn: %v", err)
+	}
+	defer pool.Put(conn)
+
+	// The schema Create applied is visible through the opened pool...
+	if got := metaCount(t, conn); got != 0 {
+		t.Fatalf("meta rows = %d, want 0", got)
+	}
+	// ...and foreign keys are enforced on pooled connections.
+	mustExec(t, conn, `INSERT INTO accounts(id, email, is_admin, is_active, hashed_secret)
+		VALUES(1, 'a@example.com', 0, 1, 'h');`)
+	wantErr(t, conn, "missing game fk", `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(404, 1, 'player_1', 0, 1);`)
+}
+
+func TestOpenMigratesOlderInstanceForward(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, FileName)
+
+	// Stand up a database at an OLDER schema version: same AppID, but only the
+	// first migration applied (the meta table; no games table yet). This is
+	// what an existing instance from an earlier release looks like.
+	older := sqlitemigration.NewPool(dbPath, sqlitemigration.Schema{
+		AppID:      appID,
+		Migrations: migrations[:1],
+	}, sqlitemigration.Options{
+		Flags:       sqlite.OpenReadWrite | sqlite.OpenCreate | sqlite.OpenWAL | sqlite.OpenURI,
+		PrepareConn: enableForeignKeys,
+	})
+	conn, err := older.Get(ctx)
+	if err != nil {
+		t.Fatalf("seed older db: %v", err)
+	}
+	wantErr(t, conn, "games table should not exist yet", `SELECT 1 FROM games;`)
+	older.Put(conn)
+	if err := older.Close(); err != nil {
+		t.Fatalf("close older db: %v", err)
+	}
+
+	// Open must run the remaining migrations every time, bringing this existing
+	// instance current.
+	pool, closeDB, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer closeDB()
+
+	conn, err = pool.Get(ctx)
+	if err != nil {
+		t.Fatalf("get conn: %v", err)
+	}
+	defer pool.Put(conn)
+
+	// The games table from a later migration now exists.
+	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('alpha', 1);`)
+}
+
+func TestOpenCloseIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	if err := Create(ctx, dir); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	_, closeDB, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := closeDB(); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+	// A second close must not panic (Pool.Close is not idempotent on its own)
+	// and must report the same result.
+	if err := closeDB(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+}
+
+func TestOpenMissingDatabase(t *testing.T) {
+	dir := t.TempDir() // directory exists, but no database file inside it
+	if _, _, err := Open(context.Background(), dir); err == nil {
+		t.Fatal("Open of a directory without a database unexpectedly succeeded")
+	}
+}
+
+func TestOpenMissingDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nope")
+	if _, _, err := Open(context.Background(), missing); err == nil {
+		t.Fatal("Open of a missing directory unexpectedly succeeded")
+	}
+}
+
+func TestOpenRejectsForeignDatabase(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	// Build a non-ecv4 SQLite file at the expected path: a valid database with
+	// no application_id stamp.
+	dbPath := filepath.Join(dir, FileName)
+	conn, err := sqlite.OpenConn(dbPath, sqlite.OpenReadWrite|sqlite.OpenCreate)
+	if err != nil {
+		t.Fatalf("seed foreign db: %v", err)
+	}
+	mustExec(t, conn, `CREATE TABLE unrelated (x INTEGER);`)
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close foreign db: %v", err)
+	}
+
+	if _, _, err := Open(ctx, dir); err == nil {
+		t.Fatal("Open of a non-ecv4 database unexpectedly succeeded")
+	}
 }
 
 func TestCreateMemoryPathSmokeTest(t *testing.T) {

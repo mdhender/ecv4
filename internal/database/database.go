@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 
 	"zombiezen.com/go/sqlite"
@@ -44,6 +45,24 @@ func enableForeignKeys(conn *sqlite.Conn) error {
 	return nil
 }
 
+// requireDir verifies that dir already exists and is a directory, returning a
+// descriptive error otherwise. It never creates anything, enforcing the rule
+// that callers supply a database directory and this package only ever opens or
+// writes the FileName within it.
+func requireDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%q: directory does not exist", dir)
+		}
+		return fmt.Errorf("%q: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%q: not a directory", dir)
+	}
+	return nil
+}
+
 // Create initializes a new database named FileName inside dir and runs the
 // initial migrations against it.
 //
@@ -70,15 +89,8 @@ func Create(ctx context.Context, dir string) (err error) {
 		return nil
 	}
 
-	info, err := os.Stat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("%q: directory does not exist", dir)
-		}
-		return fmt.Errorf("%q: %w", dir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%q: not a directory", dir)
+	if err := requireDir(dir); err != nil {
+		return err
 	}
 
 	dbPath := filepath.Join(dir, FileName)
@@ -107,6 +119,91 @@ func Create(ctx context.Context, dir string) (err error) {
 	}
 
 	return nil
+}
+
+// Open opens the existing database named FileName inside dir, brings its schema
+// current by running any pending migrations, and returns a connection pool
+// together with a function that closes it.
+//
+// Open never creates a database. dir must already exist and be a directory, and
+// dir/FileName must already exist; a missing database is an error, not an
+// invitation to create one. Create is the only entry point that brings a
+// database into existence, so Open is the normal way every other caller (the
+// server, CLI tools) reaches an established database.
+//
+// Migrations run on every Open. Create applies the migrations once, when it
+// first builds the file; it cannot bring an existing, older instance forward.
+// Open is therefore the upgrade path: each time a process opens the database it
+// applies whatever migrations have been appended since the file was last
+// touched. Because migrations are append-only and tracked, opening an
+// already-current database is a no-op. Opening a SQLite file that belongs to a
+// different application (a mismatched application_id) is rejected here.
+//
+// The returned pool is safe for concurrent use by multiple goroutines:
+// zombiezen serves many accessors in one process from a pool of connections,
+// and WAL mode lets readers run concurrently with a single writer. Acquire a
+// connection with pool.Take(ctx) (or pool.Get) and always return it with
+// pool.Put.
+//
+// The returned close function shuts the pool down, interrupting in-flight
+// queries, checkpointing the WAL, and closing every connection. The caller
+// MUST call it — typically via defer, or from the server's graceful-shutdown
+// path — or it leaks connections and risks leaving WAL state behind. The
+// returned function is idempotent: calling it more than once is safe and
+// returns the same error as the first call.
+//
+// Context note: ctx governs the open-time work below (waiting for the initial
+// migration to finish, and the forced first connection). Per-request
+// cancellation is wired per connection by the pool: pool.Take(ctx) binds ctx to
+// that connection so a cancelled or timed-out ctx interrupts the running query
+// (SQLITE_INTERRUPT) until the connection is Put back. zombiezen does not trap
+// OS signals itself; callers turn signals into a cancelable context (as
+// cmd/game-server already does with signal.NotifyContext) and pass it down to
+// Take and to query execution.
+func Open(ctx context.Context, dir string) (*sqlitemigration.Pool, func() error, error) {
+	if err := requireDir(dir); err != nil {
+		return nil, nil, err
+	}
+
+	dbPath := filepath.Join(dir, FileName)
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("%q: database does not exist", dbPath)
+		}
+		return nil, nil, fmt.Errorf("%q: %w", dbPath, err)
+	}
+	if info.IsDir() {
+		return nil, nil, fmt.Errorf("%q: is a directory, not a database file", dbPath)
+	}
+
+	pool := sqlitemigration.NewPool(dbPath, schema(), sqlitemigration.Options{
+		// Deliberately omit OpenCreate so the pool can never bring a database
+		// into existence; that is Create's job alone. OpenURI matches Create
+		// and permits file: URIs. PrepareConn enforces foreign keys on every
+		// pooled connection.
+		Flags:       sqlite.OpenReadWrite | sqlite.OpenWAL | sqlite.OpenURI,
+		PrepareConn: enableForeignKeys,
+	})
+
+	// Force the background migration to complete now so any error — a failed
+	// migration, a mismatched application_id, or a database that vanished
+	// between the stat above and here — surfaces from Open rather than from the
+	// caller's first query.
+	conn, err := pool.Get(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, nil, fmt.Errorf("open %q: %w", dbPath, err)
+	}
+	pool.Put(conn)
+
+	var once sync.Once
+	var closeErr error
+	closeFn := func() error {
+		once.Do(func() { closeErr = pool.Close() })
+		return closeErr
+	}
+	return pool, closeFn, nil
 }
 
 // CreateMemory creates a private, ephemeral in-memory database, runs the

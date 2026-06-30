@@ -27,6 +27,7 @@ func main() {
 
 	rootFlags := ff.NewFlagSet("game-server")
 	addr := rootFlags.StringLong("addr", config.DefaultAddr, "HTTP listen address")
+	dbDir := rootFlags.StringLong("db-dir", ".", "directory holding the "+database.FileName+" database (env ECV4_DB_DIR)")
 	rootCmd := &ff.Command{
 		Name:      "game-server",
 		Usage:     "game-server [FLAGS] <SUBCOMMAND>",
@@ -35,7 +36,7 @@ func main() {
 		// With no subcommand, run the server. This keeps `make run`
 		// (go run ./cmd/game-server) serving the skeleton as before.
 		Exec: func(ctx context.Context, _ []string) error {
-			return runServer(ctx, *addr)
+			return runServer(ctx, *addr, *dbDir)
 		},
 	}
 
@@ -89,7 +90,7 @@ func main() {
 	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseCreateCmd)
 	rootCmd.Subcommands = append(rootCmd.Subcommands, databaseCmd)
 
-	switch err := rootCmd.ParseAndRun(ctx, os.Args[1:]); {
+	switch err := rootCmd.ParseAndRun(ctx, os.Args[1:], ff.WithEnvVarPrefix("ECV4")); {
 	case err == nil:
 		// success
 	case errors.Is(err, ff.ErrHelp):
@@ -101,10 +102,35 @@ func main() {
 	}
 }
 
-// runServer starts the skeleton HTTP server and blocks until ctx is cancelled
-// (SIGINT/SIGTERM) or the listener fails.
-func runServer(ctx context.Context, addr string) error {
+// runServer opens the database, starts the skeleton HTTP server, and blocks
+// until ctx is cancelled (SIGINT/SIGTERM) or the listener fails. The database
+// pool is opened before the listener and closed only after the server has
+// drained, so in-flight requests keep a usable pool through shutdown.
+func runServer(ctx context.Context, addr, dbDir string) error {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// Open (and migrate) the database before binding the listener; a bad
+	// database should fail startup, not surface on the first request. The
+	// deferred close runs after the shutdown logic below returns, so it
+	// happens once the server has stopped accepting and draining requests.
+	dbPath := filepath.Join(dbDir, database.FileName)
+	pool, closeDB, err := database.Open(ctx, dbDir)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer func() {
+		if err := closeDB(); err != nil {
+			logger.Error("closing database", "err", err)
+		} else {
+			logger.Info("database closed")
+		}
+	}()
+	logger.Info("database ready", "path", dbPath)
+
+	// pool is the shared connection pool for request handlers. After
+	// `make generate`, hand it to the generated handler wiring; until then it
+	// is held open here for the server's lifetime.
+	_ = pool
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httputil.HealthHandler(ecv4.Version().Short()))
