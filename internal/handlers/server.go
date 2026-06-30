@@ -1,26 +1,40 @@
-// Copy this file to server.go after running `make generate`, then replace the
-// TODO responses with real service calls.
-//
-// This example assumes oapi-codegen generated strict-server request/response
-// objects from api/openapi.yaml. If generator names drift, let the compiler be
-// the source of truth and adjust the signatures to match internal/api.
-
+// Package handlers implements the generated StrictServerInterface from
+// internal/api. Most methods are still stubs (returning nil) pending their
+// service-layer implementations; the compiler, via the var _ assertion below,
+// is the source of truth if generated names drift from these signatures.
 package handlers
 
 import (
 	"context"
 
-	"example.com/go-game-server/internal/api"
+	ecv4 "github.com/mdhender/ecv4"
+	"github.com/mdhender/ecv4/internal/api"
+	"github.com/mdhender/ecv4/internal/store"
 )
 
 var _ api.StrictServerInterface = (*Server)(nil)
 
-type Server struct{}
+// Server carries the dependencies the handlers need. More are added as handlers
+// are implemented; for now it holds the store used by GetVersion.
+type Server struct {
+	store *store.Store
+}
 
-func NewServer() *Server { return &Server{} }
+func NewServer(st *store.Store) *Server { return &Server{store: st} }
 
 func (s *Server) GetHealth(ctx context.Context, request api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
-	return api.GetHealth200JSONResponse{Status: "ok", Version: "0.1.0"}, nil
+	return api.GetHealth200JSONResponse{Status: "ok", Version: ecv4.Version().Short()}, nil
+}
+
+func (s *Server) GetVersion(ctx context.Context, request api.GetVersionRequestObject) (api.GetVersionResponseObject, error) {
+	schemaVersion, err := s.store.SchemaVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return api.GetVersion200JSONResponse{
+		Application: ecv4.Version().String(),
+		Database:    api.DatabaseVersion{SchemaVersion: schemaVersion},
+	}, nil
 }
 
 func (s *Server) Login(ctx context.Context, request api.LoginRequestObject) (api.LoginResponseObject, error) {

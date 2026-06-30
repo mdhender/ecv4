@@ -40,6 +40,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+  /version:
+    get:
+      tags: [System]
+      operationId: getVersion
+      summary: Application and database schema version
+      description: |
+        Returns the running server's application version and the schema
+        version of the open database. Public; no authentication required.
+      security: []
+      responses:
+        '200':
+          description: Version information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
   /auth/login:
     post:
       tags: [Auth]
@@ -384,6 +400,26 @@ components:
         version:
           type: string
           example: 0.1.0
+    VersionResponse:
+      type: object
+      required: [application, database]
+      properties:
+        application:
+          type: string
+          description: Server application version (semver, including build metadata when available).
+          example: 0.1.0-alpha
+        database:
+          $ref: '#/components/schemas/DatabaseVersion'
+    DatabaseVersion:
+      type: object
+      required: [schemaVersion]
+      properties:
+        schemaVersion:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Number of schema migrations applied to the open database (SQLite user_version).
+          example: 4
     LoginRequest:
       type: object
       required: [username, password]

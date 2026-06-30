@@ -12,10 +12,6 @@
 *.out
 *.test
 
-# Generated OpenAPI server code; commit this once generated in a real repo.
-# Remove the next line if you choose to commit generated code immediately.
-internal/api/openapi.gen.go
-
 # Local config and secrets
 .env
 *.local

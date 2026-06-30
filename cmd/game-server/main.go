@@ -18,7 +18,9 @@ import (
 	ecv4 "github.com/mdhender/ecv4"
 	"github.com/mdhender/ecv4/internal/config"
 	"github.com/mdhender/ecv4/internal/database"
+	"github.com/mdhender/ecv4/internal/handlers"
 	"github.com/mdhender/ecv4/internal/httputil"
+	"github.com/mdhender/ecv4/internal/store"
 )
 
 func main() {
@@ -127,24 +129,20 @@ func runServer(ctx context.Context, addr, dbDir string) error {
 	}()
 	logger.Info("database ready", "path", dbPath)
 
-	// pool is the shared connection pool for request handlers. After
-	// `make generate`, hand it to the generated handler wiring; until then it
-	// is held open here for the server's lifetime.
-	_ = pool
+	// The store wraps the pool with typed query methods; the generated API
+	// handlers reach the database only through it.
+	apiServer := handlers.NewServer(store.New(pool))
 
+	// Serve the raw spec alongside the generated API routes, then let
+	// oapi-codegen register the API operations (including /healthz and
+	// /version) on the same mux.
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", httputil.HealthHandler(ecv4.Version().Short()))
 	mux.HandleFunc("GET /openapi.yaml", httputil.OpenAPIHandler("api/openapi.yaml"))
-
-	// After `make generate`, replace this small skeleton mux with the generated
-	// oapi-codegen handler wiring. See internal/handlers/server.go.stub.
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	})
+	apiHandler := handlers.NewHTTPHandler(apiServer, mux)
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           httputil.RequestLogger(logger, mux),
+		Handler:           httputil.RequestLogger(logger, apiHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
