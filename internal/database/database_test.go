@@ -132,6 +132,121 @@ func TestCreateSharedMemoryEmptyNameIsolatesCalls(t *testing.T) {
 	}
 }
 
+// exec runs a statement and returns any error, for tests that assert a
+// constraint either accepts or rejects a row.
+func exec(conn *sqlite.Conn, query string) error {
+	return sqlitex.Execute(conn, query, nil)
+}
+
+// mustExec fails the test if the statement does not succeed.
+func mustExec(t *testing.T, conn *sqlite.Conn, query string) {
+	t.Helper()
+	if err := exec(conn, query); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
+	}
+}
+
+// wantErr fails the test if the statement succeeds.
+func wantErr(t *testing.T, conn *sqlite.Conn, what, query string) {
+	t.Helper()
+	if err := exec(conn, query); err == nil {
+		t.Fatalf("%s: statement unexpectedly succeeded: %q", what, query)
+	}
+}
+
+func TestAccountsConstraints(t *testing.T) {
+	conn, err := CreateMemory(context.Background())
+	if err != nil {
+		t.Fatalf("CreateMemory: %v", err)
+	}
+	defer conn.Close()
+
+	mustExec(t, conn, `INSERT INTO accounts(email, is_admin, is_active, hashed_secret)
+		VALUES('alice@example.com', 1, 1, 'hash');`)
+
+	// Email is unique.
+	wantErr(t, conn, "duplicate email", `INSERT INTO accounts(email, is_admin, is_active, hashed_secret)
+		VALUES('alice@example.com', 0, 1, 'hash');`)
+
+	// Boolean columns reject values outside {0,1}.
+	wantErr(t, conn, "is_admin out of range", `INSERT INTO accounts(email, is_admin, is_active, hashed_secret)
+		VALUES('bob@example.com', 2, 1, 'hash');`)
+}
+
+func TestGameCodeConstraint(t *testing.T) {
+	conn, err := CreateMemory(context.Background())
+	if err != nil {
+		t.Fatalf("CreateMemory: %v", err)
+	}
+	defer conn.Close()
+
+	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('alpha-1', 1);`)
+	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('a.b_c-2', 1);`)
+
+	wantErr(t, conn, "code unique", `INSERT INTO games(code, is_active) VALUES('alpha-1', 1);`)
+	wantErr(t, conn, "code too short", `INSERT INTO games(code, is_active) VALUES('a', 1);`)
+	wantErr(t, conn, "code leading digit", `INSERT INTO games(code, is_active) VALUES('1alpha', 1);`)
+	wantErr(t, conn, "code uppercase", `INSERT INTO games(code, is_active) VALUES('Alpha', 1);`)
+	wantErr(t, conn, "code bad char", `INSERT INTO games(code, is_active) VALUES('al pha', 1);`)
+}
+
+func TestGameAccountRoleConstraints(t *testing.T) {
+	conn, err := CreateMemory(context.Background())
+	if err != nil {
+		t.Fatalf("CreateMemory: %v", err)
+	}
+	defer conn.Close()
+
+	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(1, 'alpha', 1);`)
+	mustExec(t, conn, `INSERT INTO accounts(id, email, is_admin, is_active, hashed_secret)
+		VALUES(10, 'p1@example.com', 0, 1, 'h'), (11, 'p2@example.com', 0, 1, 'h');`)
+
+	// The by-convention GM handle "GM" is accepted by the storage-layer check.
+	mustExec(t, conn, `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(1, 10, 'GM', 1, 1);`)
+	mustExec(t, conn, `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(1, 11, 'player_1', 0, 1);`)
+
+	// One account, one membership per game.
+	wantErr(t, conn, "duplicate (game,account)", `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(1, 10, 'other', 0, 1);`)
+
+	// Handles are unique within a game.
+	mustExec(t, conn, `INSERT INTO accounts(id, email, is_admin, is_active, hashed_secret)
+		VALUES(12, 'p3@example.com', 0, 1, 'h');`)
+	wantErr(t, conn, "duplicate handle in game", `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(1, 12, 'player_1', 0, 1);`)
+
+	// Foreign keys are enforced (the pragma is on): a missing game is rejected.
+	wantErr(t, conn, "missing game fk", `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(99, 12, 'player_2', 0, 1);`)
+
+	// The same handle is free to reuse in a different game.
+	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(2, 'beta', 1);`)
+	mustExec(t, conn, `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(2, 10, 'player_1', 0, 1);`)
+}
+
+func TestForeignKeysEnforcedOnSharedMemory(t *testing.T) {
+	ctx := context.Background()
+	pool, err := CreateSharedMemory(ctx, "")
+	if err != nil {
+		t.Fatalf("CreateSharedMemory: %v", err)
+	}
+	defer pool.Close()
+
+	conn, err := pool.Get(ctx)
+	if err != nil {
+		t.Fatalf("get conn: %v", err)
+	}
+	defer pool.Put(conn)
+
+	mustExec(t, conn, `INSERT INTO accounts(id, email, is_admin, is_active, hashed_secret)
+		VALUES(1, 'a@example.com', 0, 1, 'h');`)
+	wantErr(t, conn, "missing game fk", `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(404, 1, 'player_1', 0, 1);`)
+}
+
 func TestCreateMemoryPathSmokeTest(t *testing.T) {
 	// Create with the special MemoryPath should apply migrations against an
 	// ephemeral database and succeed without touching the filesystem.

@@ -13,6 +13,7 @@ import (
 
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitemigration"
+	"zombiezen.com/go/sqlite/sqlitex"
 )
 
 // FileName is the fixed name of the database file within a database
@@ -30,6 +31,18 @@ const MemoryPath = ":memory:"
 // memCounter makes auto-generated in-memory database names unique within
 // a process so that independent CreateSharedMemory callers do not collide.
 var memCounter atomic.Uint64
+
+// enableForeignKeys turns on foreign-key enforcement for conn. The pragma is
+// per-connection and not persisted, so it must be set on every connection
+// that touches data; otherwise the schema's REFERENCES clauses are advisory
+// only. It is a no-op inside a transaction, so it is run on freshly opened
+// connections before any work begins.
+func enableForeignKeys(conn *sqlite.Conn) error {
+	if err := sqlitex.ExecuteTransient(conn, "PRAGMA foreign_keys = ON;", nil); err != nil {
+		return fmt.Errorf("enable foreign keys: %w", err)
+	}
+	return nil
+}
 
 // Create initializes a new database named FileName inside dir and runs the
 // initial migrations against it.
@@ -85,6 +98,10 @@ func Create(ctx context.Context, dir string) (err error) {
 		}
 	}()
 
+	if err := enableForeignKeys(conn); err != nil {
+		return fmt.Errorf("%q: %w", dbPath, err)
+	}
+
 	if err := sqlitemigration.Migrate(ctx, conn, schema()); err != nil {
 		return fmt.Errorf("migrate %q: %w", dbPath, err)
 	}
@@ -106,6 +123,10 @@ func CreateMemory(ctx context.Context) (*sqlite.Conn, error) {
 	conn, err := sqlite.OpenConn(MemoryPath, sqlite.OpenReadWrite|sqlite.OpenCreate)
 	if err != nil {
 		return nil, fmt.Errorf("open in-memory database: %w", err)
+	}
+	if err := enableForeignKeys(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("in-memory database: %w", err)
 	}
 	if err := sqlitemigration.Migrate(ctx, conn, schema()); err != nil {
 		conn.Close()
@@ -139,6 +160,8 @@ func CreateSharedMemory(ctx context.Context, name string) (*sqlitemigration.Pool
 		// explicitly rather than taking the WAL-enabled default. OpenURI
 		// is required so the mode/cache query parameters are honored.
 		Flags: sqlite.OpenReadWrite | sqlite.OpenCreate | sqlite.OpenURI,
+		// Enforce foreign keys on every pooled connection.
+		PrepareConn: enableForeignKeys,
 	})
 
 	// Force the background migration to complete now so any error surfaces
