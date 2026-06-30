@@ -1,3 +1,3 @@
 package config
 
-const DefaultAddr = ":8080"
+const DefaultAddr = ":9987"

@@ -9,7 +9,7 @@ info:
     public contract for player-written clients. Server DTOs and handler stubs are
     generated from this file with oapi-codegen.
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:9987
     description: Local development server
 tags:
   - name: System
