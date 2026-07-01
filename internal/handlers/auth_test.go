@@ -57,9 +57,10 @@ func TestSecuredRouteAcceptsValidToken(t *testing.T) {
 	accept := auth.VerifierFunc(func(string) (auth.Claims, error) {
 		return auth.Claims{UserID: 1, Username: "demo", ExpiresAt: time.Now().Add(time.Hour)}, nil
 	})
-	// A valid token clears the middleware; the GetMe stub then returns an empty
-	// 200. The point is that it is NOT 401 — authentication passed through.
-	if rr := get(t, newTestHandler(accept), "/me", "Bearer good"); rr.Code == http.StatusUnauthorized {
-		t.Fatalf("GET /me with valid token was rejected (401); auth should have passed it through")
+	// A valid token clears the middleware. Target /games — a still-stubbed
+	// secured route that does not touch the store — so this stays a test of the
+	// auth middleware, not of any handler. The point is that it is NOT 401.
+	if rr := get(t, newTestHandler(accept), "/games", "Bearer good"); rr.Code == http.StatusUnauthorized {
+		t.Fatalf("GET /games with valid token was rejected (401); auth should have passed it through")
 	}
 }

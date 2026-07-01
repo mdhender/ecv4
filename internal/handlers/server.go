@@ -6,9 +6,11 @@ package handlers
 
 import (
 	"context"
+	"errors"
 
 	ecv4 "github.com/mdhender/ecv4"
 	"github.com/mdhender/ecv4/internal/api"
+	"github.com/mdhender/ecv4/internal/auth"
 	"github.com/mdhender/ecv4/internal/store"
 )
 
@@ -53,8 +55,47 @@ func (s *Server) Logout(ctx context.Context, request api.LogoutRequestObject) (a
 }
 
 func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api.GetMeResponseObject, error) {
-	// TODO: read auth.Claims from context and return user details.
-	return nil, nil
+	// The bearer-auth middleware puts verified claims in the context; their
+	// absence means the request reached here unauthenticated.
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return unauthorized("missing credentials"), nil
+	}
+
+	// Read fresh account state rather than trusting the token: an account may
+	// have been deactivated or removed since the token was issued.
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return unauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return unauthorized("account is not active"), nil
+	}
+
+	// The accounts table carries only the admin flag; game-scoped GM/player
+	// roles live in game_account_role and surface on game endpoints, not here.
+	roles := []api.Role{api.Player}
+	if account.IsAdmin {
+		roles = []api.Role{api.Admin}
+	}
+
+	return api.GetMe200JSONResponse{
+		User: api.User{
+			Id:       account.ID,
+			Username: account.Email,
+			Roles:    roles,
+		},
+	}, nil
+}
+
+// unauthorized builds the 401 response for GetMe with a machine-readable code.
+func unauthorized(message string) api.GetMe401JSONResponse {
+	return api.GetMe401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code:    "unauthorized",
+		Message: message,
+	}}
 }
 
 func (s *Server) ListGames(ctx context.Context, request api.ListGamesRequestObject) (api.ListGamesResponseObject, error) {
