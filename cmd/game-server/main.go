@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
+	"golang.org/x/crypto/bcrypt"
 
 	ecv4 "github.com/mdhender/ecv4"
 	"github.com/mdhender/ecv4/internal/auth"
@@ -93,6 +95,38 @@ func main() {
 		},
 	}
 	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseCreateCmd)
+
+	// Account management is grouped under `database account <verb>` so future
+	// verbs (update, list, ...) sit together. The database directory comes from
+	// the shared --db-dir flag / ECV4_DB_DIR, defaulting to the current dir.
+	databaseAccountFlags := ff.NewFlagSet("account").SetParent(databaseFlags)
+	databaseAccountCmd := &ff.Command{
+		Name:      "account",
+		Usage:     "game-server database account <SUBCOMMAND>",
+		ShortHelp: "manage accounts in the database",
+		Flags:     databaseAccountFlags,
+	}
+
+	accountCreateFlags := ff.NewFlagSet("create").SetParent(databaseAccountFlags)
+	accEmail := accountCreateFlags.StringLong("email", "", "account email, also the login username (required)")
+	accSecret := accountCreateFlags.StringLong("secret", "", "account password, stored bcrypt-hashed (required)")
+	accIsActive := accountCreateFlags.BoolLong("is-active", "mark the account active so it can log in")
+	accIsAdmin := accountCreateFlags.BoolLong("is-admin", "grant the account admin privileges")
+	databaseAccountCreateCmd := &ff.Command{
+		Name:      "create",
+		Usage:     "game-server database account create --email <email> --secret <secret> [--is-active] [--is-admin]",
+		ShortHelp: "create a new account",
+		LongHelp: "Create an account in the " + database.FileName + " database inside --db-dir.\n" +
+			"The email is lower-cased and must be unique. The secret is bcrypt-hashed\n" +
+			"before storage. Without --is-active the account cannot log in.",
+		Flags: accountCreateFlags,
+		Exec: func(ctx context.Context, _ []string) error {
+			return createAccount(ctx, *dbDir, *accEmail, *accSecret, *accIsActive, *accIsAdmin)
+		},
+	}
+	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountCreateCmd)
+	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseAccountCmd)
+
 	rootCmd.Subcommands = append(rootCmd.Subcommands, databaseCmd)
 
 	switch err := rootCmd.ParseAndRun(ctx, os.Args[1:], ff.WithEnvVarPrefix("ECV4")); {
@@ -179,6 +213,40 @@ func runServer(ctx context.Context, addr, dbDir, jwtSecret string) error {
 		}
 		return nil
 	}
+}
+
+// createAccount opens the database in dbDir and inserts a new account. The
+// email is normalized and the secret is bcrypt-hashed before it is stored.
+func createAccount(ctx context.Context, dbDir, email, secret string, isActive, isAdmin bool) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return fmt.Errorf("account create requires --email")
+	}
+	if secret == "" {
+		return fmt.Errorf("account create requires --secret")
+	}
+
+	hashedSecret, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash secret: %w", err)
+	}
+
+	pool, closeDB, err := database.Open(ctx, dbDir)
+	if err != nil {
+		return err
+	}
+	defer closeDB()
+
+	id, err := store.New(pool).CreateAccount(ctx, email, isAdmin, isActive, string(hashedSecret))
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("created account %d %s (is_active=%t, is_admin=%t)\n", id, email, isActive, isAdmin)
+	if !isActive {
+		fmt.Println("note: account is inactive and cannot log in; re-run with --is-active to activate")
+	}
+	return nil
 }
 
 // resolveJWTSecret returns the HMAC signing key. A configured secret must be at

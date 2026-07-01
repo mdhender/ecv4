@@ -16,6 +16,10 @@ import (
 // ErrNotFound is returned by lookups that match no row.
 var ErrNotFound = errors.New("not found")
 
+// ErrConflict is returned by inserts that violate a uniqueness constraint, such
+// as creating an account with an email that already exists.
+var ErrConflict = errors.New("already exists")
+
 // Account is a row from the accounts table, without the hashed secret, which
 // never leaves the store.
 type Account struct {
@@ -34,6 +38,38 @@ type Store struct {
 // from database.Open); Store neither opens nor closes it.
 func New(pool *sqlitemigration.Pool) *Store {
 	return &Store{pool: pool}
+}
+
+// CreateAccount inserts a new account and returns its id. email must already be
+// normalized (lower-cased) and hashedSecret must be a bcrypt hash; the store
+// stores exactly what it is given. It returns ErrConflict if the email is
+// already taken.
+//
+// ctx bounds acquiring the connection and running the insert.
+func (s *Store) CreateAccount(ctx context.Context, email string, isAdmin, isActive bool, hashedSecret string) (int64, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("create account: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	err = sqlitex.Execute(conn,
+		"INSERT INTO accounts(email, is_admin, is_active, hashed_secret) VALUES(?, ?, ?, ?);",
+		&sqlitex.ExecOptions{Args: []any{email, boolToInt(isAdmin), boolToInt(isActive), hashedSecret}})
+	if err != nil {
+		if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
+			return 0, fmt.Errorf("create account %q: %w", email, ErrConflict)
+		}
+		return 0, fmt.Errorf("create account %q: %w", email, err)
+	}
+	return conn.LastInsertRowID(), nil
+}
+
+func boolToInt(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // SchemaVersion returns the database schema version: the number of migrations
