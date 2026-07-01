@@ -81,7 +81,7 @@ func (s *Server) GetAccount(ctx context.Context, request api.GetAccountRequestOb
 		}
 		return nil, err
 	}
-	return api.GetAccount200JSONResponse(apiAccount(account)), nil
+	return api.GetAccount200JSONResponse{Account: apiAccount(account)}, nil
 }
 
 func (s *Server) ListAccounts(ctx context.Context, request api.ListAccountsRequestObject) (api.ListAccountsResponseObject, error) {
@@ -231,7 +231,7 @@ func (s *Server) UpdateAccount(ctx context.Context, request api.UpdateAccountReq
 	if err != nil {
 		return nil, err
 	}
-	return api.UpdateAccount200JSONResponse(apiAccount(account)), nil
+	return api.UpdateAccount200JSONResponse{Account: apiAccount(account)}, nil
 }
 
 func createAccountBadRequest(message string) api.CreateAccount400JSONResponse {

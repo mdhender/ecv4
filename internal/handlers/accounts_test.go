@@ -158,10 +158,11 @@ func TestGetAccount(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("get: got %d, want 200 (body %q)", rr.Code, rr.Body.String())
 	}
-	var account api.Account
-	if err := json.Unmarshal(rr.Body.Bytes(), &account); err != nil {
+	var resp api.AccountResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	account := resp.Account
 	if account.Id != 50 || string(account.Email) != "target@example.com" || !account.IsActive || account.IsAdmin {
 		t.Fatalf("unexpected account: %+v", account)
 	}
@@ -239,10 +240,11 @@ func TestUpdateAccountPartial(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("update: got %d, want 200 (body %q)", rr.Code, rr.Body.String())
 	}
-	var account api.Account
-	if err := json.Unmarshal(rr.Body.Bytes(), &account); err != nil {
+	var resp api.AccountResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	account := resp.Account
 	if !account.IsActive {
 		t.Fatal("isActive should be true after update")
 	}
