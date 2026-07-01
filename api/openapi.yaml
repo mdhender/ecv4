@@ -24,6 +24,8 @@ tags:
     description: Turn metadata and state
   - name: Orders
     description: Order validation, submission, and status
+  - name: Accounts
+    description: Account administration (admin only)
 security:
   - bearerAuth: []
 paths:
@@ -133,6 +135,69 @@ paths:
                 $ref: '#/components/schemas/MeResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /accounts:
+    post:
+      tags: [Accounts]
+      operationId: createAccount
+      summary: Create an account
+      description: |
+        Admin only. Creates an account, which is inactive and non-admin unless
+        isActive / isAdmin are set. If secret is omitted a random passphrase is
+        generated and returned once in generatedSecret; only its hash is stored,
+        so it is shown once and cannot be recovered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateAccountResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /accounts/{accountId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    patch:
+      tags: [Accounts]
+      operationId: updateAccount
+      summary: Update an account
+      description: |
+        Admin only. Selected by id. Every field is optional; a present field is
+        set and an absent field is left unchanged. At least one field is
+        required. A new secret must be at least 8 characters.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountRequest'
+      responses:
+        '200':
+          description: Account updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /games:
     get:
       tags: [Games]
@@ -358,6 +423,14 @@ components:
         type: integer
         format: int64
         minimum: 1
+    AccountId:
+      name: accountId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
   responses:
     BadRequest:
       description: Invalid request
@@ -483,6 +556,64 @@ components:
     Role:
       type: string
       enum: [player, gm, admin]
+    Account:
+      type: object
+      required: [id, email, isActive, isAdmin, roles]
+      properties:
+        id:
+          type: integer
+          format: int64
+        email:
+          type: string
+          format: email
+        isActive:
+          type: boolean
+        isAdmin:
+          type: boolean
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+    CreateAccountRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        secret:
+          type: string
+          format: password
+          description: Optional. If omitted, a random passphrase is generated. Minimum 8 characters.
+        isActive:
+          type: boolean
+          default: false
+        isAdmin:
+          type: boolean
+          default: false
+    CreateAccountResponse:
+      type: object
+      required: [account]
+      properties:
+        account:
+          $ref: '#/components/schemas/Account'
+        generatedSecret:
+          type: string
+          description: |
+            The plaintext secret, present only when one was generated (secret
+            omitted from the request). Shown once; only its hash is stored.
+    UpdateAccountRequest:
+      type: object
+      properties:
+        isActive:
+          type: boolean
+        isAdmin:
+          type: boolean
+        secret:
+          type: string
+          format: password
+          description: New secret, minimum 8 characters.
     GameStatus:
       type: string
       enum: [draft, recruiting, active, paused, complete, archived]
