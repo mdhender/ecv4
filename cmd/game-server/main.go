@@ -16,6 +16,7 @@ import (
 	"github.com/peterbourgon/ff/v4/ffhelp"
 
 	ecv4 "github.com/mdhender/ecv4"
+	"github.com/mdhender/ecv4/internal/auth"
 	"github.com/mdhender/ecv4/internal/config"
 	"github.com/mdhender/ecv4/internal/database"
 	"github.com/mdhender/ecv4/internal/handlers"
@@ -133,12 +134,19 @@ func runServer(ctx context.Context, addr, dbDir string) error {
 	// handlers reach the database only through it.
 	apiServer := handlers.NewServer(store.New(pool))
 
+	// Placeholder bearer-token verifier: it rejects every token, so secured
+	// routes return 401 until a real JWT verifier is wired to /auth/login.
+	// Public routes (/healthz, /version, /openapi.yaml) are unaffected.
+	verifier := auth.VerifierFunc(func(string) (auth.Claims, error) {
+		return auth.Claims{}, errors.New("token verification not implemented")
+	})
+
 	// Serve the raw spec alongside the generated API routes, then let
 	// oapi-codegen register the API operations (including /healthz and
 	// /version) on the same mux.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /openapi.yaml", httputil.OpenAPIHandler("api/openapi.yaml"))
-	apiHandler := handlers.NewHTTPHandler(apiServer, mux)
+	apiHandler := handlers.NewHTTPHandler(apiServer, mux, verifier)
 
 	srv := &http.Server{
 		Addr:              addr,
