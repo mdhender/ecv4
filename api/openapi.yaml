@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Experimental Game Server API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     Contract-first REST API for an experimental Go game web server.
 
@@ -196,7 +196,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Account'
+                $ref: '#/components/schemas/AccountResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -223,7 +223,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Account'
+                $ref: '#/components/schemas/AccountResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -608,6 +608,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Role'
+    AccountResponse:
+      type: object
+      required: [account]
+      properties:
+        account:
+          $ref: '#/components/schemas/Account'
     CreateAccountRequest:
       type: object
       required: [email]
