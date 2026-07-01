@@ -80,17 +80,24 @@ func main() {
 		Flags:     databaseFlags,
 	}
 
+	databaseCreateFlags := ff.NewFlagSet("create").SetParent(databaseFlags)
+	createDevelopment := databaseCreateFlags.BoolLong("development", "in development, seed a known admin account from ECV4_DEVELOPMENT_ADMIN_EMAIL/ECV4_DEVELOPMENT_ADMIN_SECRET")
 	databaseCreateCmd := &ff.Command{
 		Name:      "create",
-		Usage:     "game-server database create <PATH>",
+		Usage:     "game-server database create [--development] <PATH>",
 		ShortHelp: "create a new database in an existing directory",
 		LongHelp: "Create a new " + database.FileName + " database file inside PATH.\n" +
 			"PATH must be an existing directory; it is never created.\n" +
 			"The command fails if the database file already exists.\n" +
 			"\n" +
 			"A PATH of " + database.MemoryPath + " builds an ephemeral in-memory\n" +
-			"database to verify the migrations apply; nothing is written to disk.",
-		Flags: ff.NewFlagSet("create").SetParent(databaseFlags),
+			"database to verify the migrations apply; nothing is written to disk.\n" +
+			"\n" +
+			"With --development, and only when ECV4_ENV is development and both\n" +
+			"ECV4_DEVELOPMENT_ADMIN_EMAIL and ECV4_DEVELOPMENT_ADMIN_SECRET are set,\n" +
+			"seed a known active admin account so local smoke tests have a reliable\n" +
+			"login. It is skipped (with a note) when those conditions are not met.",
+		Flags: databaseCreateFlags,
 		Exec: func(ctx context.Context, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("create requires exactly one PATH argument")
@@ -103,6 +110,11 @@ func main() {
 				fmt.Println("verified migrations against an in-memory database (nothing persisted)")
 			} else {
 				fmt.Printf("created %s\n", filepath.Join(path, database.FileName))
+			}
+			if *createDevelopment {
+				if err := seedDevelopmentAdmin(ctx, env, path); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
@@ -276,6 +288,31 @@ func runServer(ctx context.Context, addr, dbDir, jwtSecret string) error {
 		}
 		return nil
 	}
+}
+
+// seedDevelopmentAdmin optionally seeds a known, active admin account into a
+// freshly created database so local smoke tests have a reliable login. It is a
+// deliberate no-op — with an explanatory note — unless env is development and
+// both ECV4_DEVELOPMENT_ADMIN_EMAIL and ECV4_DEVELOPMENT_ADMIN_SECRET are set.
+// The special in-memory database is never seeded because it is not persisted.
+func seedDevelopmentAdmin(ctx context.Context, env, path string) error {
+	if path == database.MemoryPath {
+		fmt.Println("skipping --development admin seed: the in-memory database is not persisted")
+		return nil
+	}
+	if env != "development" {
+		fmt.Printf("skipping --development admin seed: ECV4_ENV is %q, not development\n", env)
+		return nil
+	}
+	email := os.Getenv("ECV4_DEVELOPMENT_ADMIN_EMAIL")
+	secret := os.Getenv("ECV4_DEVELOPMENT_ADMIN_SECRET")
+	if email == "" || secret == "" {
+		fmt.Println("skipping --development admin seed: set ECV4_DEVELOPMENT_ADMIN_EMAIL and ECV4_DEVELOPMENT_ADMIN_SECRET to seed one")
+		return nil
+	}
+
+	fmt.Println("seeding development admin account...")
+	return createAccount(ctx, path, email, secret, nil, true, true)
 }
 
 // createAccount opens the database in dbDir and inserts a new account. The

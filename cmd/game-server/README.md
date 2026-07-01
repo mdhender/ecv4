@@ -47,7 +47,7 @@ name is fixed and never chosen by the caller.
 #### `database create`
 
 ```
-game-server database create <PATH>
+game-server database create [--development] <PATH>
 ```
 
 Creates a new `ecv4.db` database inside `PATH` and applies the initial
@@ -66,6 +66,24 @@ every other entry point opens an existing database.
 ```
 $ game-server database create data/alpha
 created data/alpha/ecv4.db
+```
+
+**Seeding a development admin.** Pass `--development` to seed a known, active
+admin account into the new database so local smoke tests have a reliable login.
+The seed only happens when all of the following hold; otherwise it is skipped
+with an explanatory note (the database is still created):
+
+- `ECV4_ENV` is `development` (the default when unset).
+- `ECV4_DEVELOPMENT_ADMIN_EMAIL` and `ECV4_DEVELOPMENT_ADMIN_SECRET` are both
+  set (typically in `.env.development.local`).
+- `PATH` is a real directory, not `:memory:` (the in-memory database is not
+  persisted, so there is nothing to seed).
+
+```
+$ game-server database create --development data/alpha
+created data/alpha/ecv4.db
+seeding development admin account...
+created account 1 penny@example.com (is_active=true, is_admin=true)
 ```
 
 **In-memory smoke test.** A `PATH` of `:memory:` builds an ephemeral in-memory
