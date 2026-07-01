@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
+	mrand "math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +26,7 @@ import (
 	"github.com/mdhender/ecv4/internal/database"
 	"github.com/mdhender/ecv4/internal/handlers"
 	"github.com/mdhender/ecv4/internal/httputil"
+	"github.com/mdhender/ecv4/internal/phrases"
 	"github.com/mdhender/ecv4/internal/store"
 )
 
@@ -109,17 +112,18 @@ func main() {
 
 	accountCreateFlags := ff.NewFlagSet("create").SetParent(databaseAccountFlags)
 	accEmail := accountCreateFlags.StringLong("email", "", "account email, also the login username (required)")
-	accSecret := accountCreateFlags.StringLong("secret", "", "account password, stored bcrypt-hashed (required)")
+	accSecret := accountCreateFlags.StringLong("secret", "", "account password, stored bcrypt-hashed (optional; a random passphrase is generated and printed if omitted)")
 	accIsInactive := accountCreateFlags.BoolLong("is-inactive", "create the account disabled, unable to log in")
 	accIsAdmin := accountCreateFlags.BoolLong("is-admin", "grant the account admin privileges")
 	databaseAccountCreateCmd := &ff.Command{
 		Name:      "create",
-		Usage:     "game-server database account create --email <email> --secret <secret> [--is-inactive] [--is-admin]",
+		Usage:     "game-server database account create --email <email> [--secret <secret>] [--is-inactive] [--is-admin]",
 		ShortHelp: "create a new account",
 		LongHelp: "Create an account in the " + database.FileName + " database inside --db-dir.\n" +
 			"The email is lower-cased and must be unique. The secret is bcrypt-hashed\n" +
-			"before storage. Accounts are active by default; pass --is-inactive to\n" +
-			"create one that cannot log in.",
+			"before storage; if --secret is omitted a random passphrase is generated and\n" +
+			"printed once (it is not recoverable). Accounts are active by default; pass\n" +
+			"--is-inactive to create one that cannot log in.",
 		Flags: accountCreateFlags,
 		Exec: func(ctx context.Context, _ []string) error {
 			return createAccount(ctx, *dbDir, *accEmail, *accSecret, !*accIsInactive, *accIsAdmin)
@@ -223,8 +227,15 @@ func createAccount(ctx context.Context, dbDir, email, secret string, isActive, i
 	if email == "" {
 		return fmt.Errorf("account create requires --email")
 	}
+
+	generated := false
 	if secret == "" {
-		return fmt.Errorf("account create requires --secret")
+		var err error
+		secret, err = generateSecret()
+		if err != nil {
+			return err
+		}
+		generated = true
 	}
 
 	hashedSecret, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
@@ -244,10 +255,29 @@ func createAccount(ctx context.Context, dbDir, email, secret string, isActive, i
 	}
 
 	fmt.Printf("created account %d %s (is_active=%t, is_admin=%t)\n", id, email, isActive, isAdmin)
+	if generated {
+		fmt.Printf("generated secret: %s\n", secret)
+		fmt.Println("WARNING: only the hash is stored; this secret is shown once and cannot be recovered. Save it now.")
+	}
 	if !isActive {
 		fmt.Println("note: account is inactive and cannot log in (created with --is-inactive)")
 	}
 	return nil
+}
+
+// generateSecret returns a random passphrase for a new account. It seeds the
+// phrases generator from crypto/rand so the result is unpredictable. Six words
+// from the EFF short list carry roughly 62 bits of entropy.
+func generateSecret() (string, error) {
+	var seed [16]byte
+	if _, err := rand.Read(seed[:]); err != nil {
+		return "", fmt.Errorf("generate secret: %w", err)
+	}
+	r := mrand.New(mrand.NewPCG(
+		binary.LittleEndian.Uint64(seed[0:8]),
+		binary.LittleEndian.Uint64(seed[8:16]),
+	))
+	return phrases.Generate(r, 6), nil
 }
 
 // resolveJWTSecret returns the HMAC signing key. A configured secret must be at
