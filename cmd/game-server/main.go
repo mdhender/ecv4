@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
-	mrand "math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,7 +24,6 @@ import (
 	"github.com/mdhender/ecv4/internal/dotenv"
 	"github.com/mdhender/ecv4/internal/handlers"
 	"github.com/mdhender/ecv4/internal/httputil"
-	"github.com/mdhender/ecv4/internal/phrases"
 	"github.com/mdhender/ecv4/internal/store"
 )
 
@@ -292,7 +289,7 @@ func createAccount(ctx context.Context, dbDir, email, secret string, seed *uint6
 	generated := false
 	if secret == "" {
 		var err error
-		secret, err = generateSecret(seed)
+		secret, err = auth.GenerateSecret(seed)
 		if err != nil {
 			return err
 		}
@@ -350,7 +347,7 @@ func updateAccount(ctx context.Context, dbDir, email string, isActive, isAdmin *
 		}
 		hashedSecret = &hash
 	case generate:
-		gen, err := generateSecret(seed)
+		gen, err := auth.GenerateSecret(seed)
 		if err != nil {
 			return err
 		}
@@ -394,40 +391,6 @@ func updateAccount(ctx context.Context, dbDir, email string, isActive, isAdmin *
 		fmt.Println("  secret updated")
 	}
 	return nil
-}
-
-// generateSecret returns a random six-word passphrase for a new account (the
-// EFF short list carries roughly 10.3 bits per word, so ~62 bits total).
-//
-// When seed is nil the two PCG seeds come from crypto/rand, so the result is
-// unpredictable. When seed is non-nil the PCG is seeded with
-// (*seed, splitMix64(*seed)), giving a reproducible "known random" passphrase
-// for tests; splitMix64 derives an independent second seed so the PCG's two
-// 64-bit lanes are not identical.
-func generateSecret(seed *uint64) (string, error) {
-	var s1, s2 uint64
-	if seed != nil {
-		s1, s2 = *seed, splitMix64(*seed)
-	} else {
-		var buf [16]byte
-		if _, err := rand.Read(buf[:]); err != nil {
-			return "", fmt.Errorf("generate secret: %w", err)
-		}
-		s1 = binary.LittleEndian.Uint64(buf[0:8])
-		s2 = binary.LittleEndian.Uint64(buf[8:16])
-	}
-	r := mrand.New(mrand.NewPCG(s1, s2))
-	return phrases.Generate(r, 6), nil
-}
-
-// splitMix64 is the canonical SplitMix64 step: it advances state x by the
-// golden-ratio increment and applies the finalizing avalanche mix. It is used
-// to derive a second PCG seed from a single --seed value.
-func splitMix64(x uint64) uint64 {
-	x += 0x9e3779b97f4a7c15
-	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
-	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
-	return x ^ (x >> 31)
 }
 
 // resolveJWTSecret returns the HMAC signing key. A configured secret must be at

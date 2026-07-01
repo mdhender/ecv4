@@ -1,4 +1,4 @@
-package main
+package auth
 
 import "testing"
 
@@ -19,26 +19,26 @@ func TestSplitMix64KnownVector(t *testing.T) {
 func TestGenerateSecretSeededIsReproducible(t *testing.T) {
 	const want = "hut.scout.kite.foil.said.haven"
 	for i := 0; i < 2; i++ {
-		got, err := generateSecret(ptrU64(42))
+		got, err := GenerateSecret(ptrU64(42))
 		if err != nil {
-			t.Fatalf("generateSecret: %v", err)
+			t.Fatalf("GenerateSecret: %v", err)
 		}
 		if got != want {
-			t.Fatalf("generateSecret(42) = %q, want %q", got, want)
+			t.Fatalf("GenerateSecret(42) = %q, want %q", got, want)
 		}
 	}
 }
 
 func TestGenerateSecretDifferentSeedsDiffer(t *testing.T) {
-	a, _ := generateSecret(ptrU64(42))
-	b, _ := generateSecret(ptrU64(43))
+	a, _ := GenerateSecret(ptrU64(42))
+	b, _ := GenerateSecret(ptrU64(43))
 	if a == b {
 		t.Fatalf("seeds 42 and 43 produced the same passphrase %q", a)
 	}
 }
 
 func TestGenerateSecretUnseededSucceeds(t *testing.T) {
-	if _, err := generateSecret(nil); err != nil {
-		t.Fatalf("generateSecret(nil): %v", err)
+	if _, err := GenerateSecret(nil); err != nil {
+		t.Fatalf("GenerateSecret(nil): %v", err)
 	}
 }
