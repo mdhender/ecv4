@@ -113,6 +113,7 @@ func main() {
 	accountCreateFlags := ff.NewFlagSet("create").SetParent(databaseAccountFlags)
 	accEmail := accountCreateFlags.StringLong("email", "", "account email, also the login username (required)")
 	accSecret := accountCreateFlags.StringLong("secret", "", "account password, stored bcrypt-hashed (optional; a random passphrase is generated and printed if omitted)")
+	accSeed := accountCreateFlags.Uint64Long("seed", 0, "for testing: seed the generated-passphrase RNG for a reproducible secret (only when --secret is omitted)")
 	accIsInactive := accountCreateFlags.BoolLong("is-inactive", "create the account disabled, unable to log in")
 	accIsAdmin := accountCreateFlags.BoolLong("is-admin", "grant the account admin privileges")
 	databaseAccountCreateCmd := &ff.Command{
@@ -122,11 +123,18 @@ func main() {
 		LongHelp: "Create an account in the " + database.FileName + " database inside --db-dir.\n" +
 			"The email is lower-cased and must be unique. The secret is bcrypt-hashed\n" +
 			"before storage; if --secret is omitted a random passphrase is generated and\n" +
-			"printed once (it is not recoverable). Accounts are active by default; pass\n" +
-			"--is-inactive to create one that cannot log in.",
+			"printed once (it is not recoverable). Pass --seed for a reproducible\n" +
+			"passphrase in tests. Accounts are active by default; pass --is-inactive to\n" +
+			"create one that cannot log in.",
 		Flags: accountCreateFlags,
 		Exec: func(ctx context.Context, _ []string) error {
-			return createAccount(ctx, *dbDir, *accEmail, *accSecret, !*accIsInactive, *accIsAdmin)
+			// A seed of 0 is valid, so distinguish "provided" from "default"
+			// via IsSet rather than the zero value.
+			var seed *uint64
+			if f, ok := accountCreateFlags.GetFlag("seed"); ok && f.IsSet() {
+				seed = accSeed
+			}
+			return createAccount(ctx, *dbDir, *accEmail, *accSecret, seed, !*accIsInactive, *accIsAdmin)
 		},
 	}
 	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountCreateCmd)
@@ -222,7 +230,7 @@ func runServer(ctx context.Context, addr, dbDir, jwtSecret string) error {
 
 // createAccount opens the database in dbDir and inserts a new account. The
 // email is normalized and the secret is bcrypt-hashed before it is stored.
-func createAccount(ctx context.Context, dbDir, email, secret string, isActive, isAdmin bool) error {
+func createAccount(ctx context.Context, dbDir, email, secret string, seed *uint64, isActive, isAdmin bool) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
 		return fmt.Errorf("account create requires --email")
@@ -231,7 +239,7 @@ func createAccount(ctx context.Context, dbDir, email, secret string, isActive, i
 	generated := false
 	if secret == "" {
 		var err error
-		secret, err = generateSecret()
+		secret, err = generateSecret(seed)
 		if err != nil {
 			return err
 		}
@@ -265,19 +273,38 @@ func createAccount(ctx context.Context, dbDir, email, secret string, isActive, i
 	return nil
 }
 
-// generateSecret returns a random passphrase for a new account. It seeds the
-// phrases generator from crypto/rand so the result is unpredictable. Six words
-// from the EFF short list carry roughly 62 bits of entropy.
-func generateSecret() (string, error) {
-	var seed [16]byte
-	if _, err := rand.Read(seed[:]); err != nil {
-		return "", fmt.Errorf("generate secret: %w", err)
+// generateSecret returns a random six-word passphrase for a new account (the
+// EFF short list carries roughly 10.3 bits per word, so ~62 bits total).
+//
+// When seed is nil the two PCG seeds come from crypto/rand, so the result is
+// unpredictable. When seed is non-nil the PCG is seeded with
+// (*seed, splitMix64(*seed)), giving a reproducible "known random" passphrase
+// for tests; splitMix64 derives an independent second seed so the PCG's two
+// 64-bit lanes are not identical.
+func generateSecret(seed *uint64) (string, error) {
+	var s1, s2 uint64
+	if seed != nil {
+		s1, s2 = *seed, splitMix64(*seed)
+	} else {
+		var buf [16]byte
+		if _, err := rand.Read(buf[:]); err != nil {
+			return "", fmt.Errorf("generate secret: %w", err)
+		}
+		s1 = binary.LittleEndian.Uint64(buf[0:8])
+		s2 = binary.LittleEndian.Uint64(buf[8:16])
 	}
-	r := mrand.New(mrand.NewPCG(
-		binary.LittleEndian.Uint64(seed[0:8]),
-		binary.LittleEndian.Uint64(seed[8:16]),
-	))
+	r := mrand.New(mrand.NewPCG(s1, s2))
 	return phrases.Generate(r, 6), nil
+}
+
+// splitMix64 is the canonical SplitMix64 step: it advances state x by the
+// golden-ratio increment and applies the finalizing avalanche mix. It is used
+// to derive a second PCG seed from a single --seed value.
+func splitMix64(x uint64) uint64 {
+	x += 0x9e3779b97f4a7c15
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+	return x ^ (x >> 31)
 }
 
 // resolveJWTSecret returns the HMAC signing key. A configured secret must be at
