@@ -149,6 +149,85 @@ func TestCreateAccountNonAdminIs403(t *testing.T) {
 	}
 }
 
+func TestGetAccount(t *testing.T) {
+	handler, pool, tokens := newAccountsHandler(t)
+	token := adminToken(t, pool, tokens, 1, "admin@example.com")
+	insertAccount(t, pool, 50, "target@example.com", false, true)
+
+	rr := doJSON(t, handler, http.MethodGet, "/accounts/50", token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get: got %d, want 200 (body %q)", rr.Code, rr.Body.String())
+	}
+	var account api.Account
+	if err := json.Unmarshal(rr.Body.Bytes(), &account); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if account.Id != 50 || string(account.Email) != "target@example.com" || !account.IsActive || account.IsAdmin {
+		t.Fatalf("unexpected account: %+v", account)
+	}
+}
+
+func TestGetAccountUnknownIdIs404(t *testing.T) {
+	handler, pool, tokens := newAccountsHandler(t)
+	token := adminToken(t, pool, tokens, 1, "admin@example.com")
+
+	rr := doJSON(t, handler, http.MethodGet, "/accounts/999", token, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("unknown id: got %d, want 404 (body %q)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestGetAccountNonAdminIs403(t *testing.T) {
+	handler, pool, tokens := newAccountsHandler(t)
+	insertAccount(t, pool, 2, "player@example.com", false, true)
+	insertAccount(t, pool, 50, "target@example.com", false, true)
+	access, _, err := tokens.IssueAccess(2, "player@example.com", []string{"player"})
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+
+	rr := doJSON(t, handler, http.MethodGet, "/accounts/50", access, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("non-admin get: got %d, want 403 (body %q)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestListAccounts(t *testing.T) {
+	handler, pool, tokens := newAccountsHandler(t)
+	token := adminToken(t, pool, tokens, 1, "admin@example.com")
+	insertAccount(t, pool, 50, "target@example.com", false, true)
+
+	rr := doJSON(t, handler, http.MethodGet, "/accounts", token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list: got %d, want 200 (body %q)", rr.Code, rr.Body.String())
+	}
+	var resp api.ListAccountsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Both the seeded admin (id 1) and the target (id 50), ordered by id.
+	if len(resp.Accounts) != 2 {
+		t.Fatalf("got %d accounts, want 2 (body %q)", len(resp.Accounts), rr.Body.String())
+	}
+	if resp.Accounts[0].Id != 1 || resp.Accounts[1].Id != 50 {
+		t.Fatalf("ids = %d, %d; want 1, 50", resp.Accounts[0].Id, resp.Accounts[1].Id)
+	}
+}
+
+func TestListAccountsNonAdminIs403(t *testing.T) {
+	handler, pool, tokens := newAccountsHandler(t)
+	insertAccount(t, pool, 2, "player@example.com", false, true)
+	access, _, err := tokens.IssueAccess(2, "player@example.com", []string{"player"})
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+
+	rr := doJSON(t, handler, http.MethodGet, "/accounts", access, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("non-admin list: got %d, want 403 (body %q)", rr.Code, rr.Body.String())
+	}
+}
+
 func TestUpdateAccountPartial(t *testing.T) {
 	handler, pool, tokens := newAccountsHandler(t)
 	token := adminToken(t, pool, tokens, 1, "admin@example.com")

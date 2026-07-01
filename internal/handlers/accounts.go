@@ -58,6 +58,58 @@ func apiAccount(a store.Account) api.Account {
 	}
 }
 
+func (s *Server) GetAccount(ctx context.Context, request api.GetAccountRequestObject) (api.GetAccountResponseObject, error) {
+	if _, authErr, err := s.requireAdmin(ctx); err != nil {
+		return nil, err
+	} else if authErr != nil {
+		if authErr.forbidden {
+			return api.GetAccount403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
+				Code: "forbidden", Message: authErr.message,
+			}}, nil
+		}
+		return api.GetAccount401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+			Code: "unauthorized", Message: authErr.message,
+		}}, nil
+	}
+
+	account, err := s.store.AccountByID(ctx, request.AccountId)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return api.GetAccount404JSONResponse{NotFoundJSONResponse: api.NotFoundJSONResponse{
+				Code: "not_found", Message: "account not found",
+			}}, nil
+		}
+		return nil, err
+	}
+	return api.GetAccount200JSONResponse(apiAccount(account)), nil
+}
+
+func (s *Server) ListAccounts(ctx context.Context, request api.ListAccountsRequestObject) (api.ListAccountsResponseObject, error) {
+	if _, authErr, err := s.requireAdmin(ctx); err != nil {
+		return nil, err
+	} else if authErr != nil {
+		if authErr.forbidden {
+			return api.ListAccounts403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
+				Code: "forbidden", Message: authErr.message,
+			}}, nil
+		}
+		return api.ListAccounts401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+			Code: "unauthorized", Message: authErr.message,
+		}}, nil
+	}
+
+	accounts, err := s.store.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]api.Account, len(accounts))
+	for i, a := range accounts {
+		out[i] = apiAccount(a)
+	}
+	return api.ListAccounts200JSONResponse{Accounts: out}, nil
+}
+
 func (s *Server) CreateAccount(ctx context.Context, request api.CreateAccountRequestObject) (api.CreateAccountResponseObject, error) {
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
