@@ -8,7 +8,7 @@ tmp_dir = "tmp"
 [build]
   cmd = "go build -o ./tmp/game-server ./cmd/game-server"
   bin = "tmp/game-server"
-  full_bin = "PORT=9987 ./tmp/game-server --db-dir data/alpha"
+  full_bin = "./tmp/game-server"
   include_ext = ["go"]
   include_dir = ["cmd/game-server", "internal"]
   exclude_regex = ["_test\\.go"]
