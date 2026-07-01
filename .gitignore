@@ -4,6 +4,7 @@
 .amp/
 .claude/
 .idea/
+next-prompt*.md
 
 # Local build products
 /bin/
