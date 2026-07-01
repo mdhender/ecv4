@@ -136,6 +136,22 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
   /accounts:
+    get:
+      tags: [Accounts]
+      operationId: listAccounts
+      summary: List accounts
+      description: Admin only. Returns all accounts, ordered by id.
+      responses:
+        '200':
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAccountsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     post:
       tags: [Accounts]
       operationId: createAccount
@@ -169,6 +185,24 @@ paths:
   /accounts/{accountId}:
     parameters:
       - $ref: '#/components/parameters/AccountId'
+    get:
+      tags: [Accounts]
+      operationId: getAccount
+      summary: Get an account by id
+      description: Admin only. Selected by id.
+      responses:
+        '200':
+          description: Account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     patch:
       tags: [Accounts]
       operationId: updateAccount
@@ -653,6 +687,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Game'
+    ListAccountsResponse:
+      type: object
+      required: [accounts]
+      properties:
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Account'
     TurnStatus:
       type: string
       enum: [open, locked, processing, published]
