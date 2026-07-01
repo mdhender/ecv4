@@ -110,18 +110,19 @@ func main() {
 	accountCreateFlags := ff.NewFlagSet("create").SetParent(databaseAccountFlags)
 	accEmail := accountCreateFlags.StringLong("email", "", "account email, also the login username (required)")
 	accSecret := accountCreateFlags.StringLong("secret", "", "account password, stored bcrypt-hashed (required)")
-	accIsActive := accountCreateFlags.BoolLong("is-active", "mark the account active so it can log in")
+	accIsInactive := accountCreateFlags.BoolLong("is-inactive", "create the account disabled, unable to log in")
 	accIsAdmin := accountCreateFlags.BoolLong("is-admin", "grant the account admin privileges")
 	databaseAccountCreateCmd := &ff.Command{
 		Name:      "create",
-		Usage:     "game-server database account create --email <email> --secret <secret> [--is-active] [--is-admin]",
+		Usage:     "game-server database account create --email <email> --secret <secret> [--is-inactive] [--is-admin]",
 		ShortHelp: "create a new account",
 		LongHelp: "Create an account in the " + database.FileName + " database inside --db-dir.\n" +
 			"The email is lower-cased and must be unique. The secret is bcrypt-hashed\n" +
-			"before storage. Without --is-active the account cannot log in.",
+			"before storage. Accounts are active by default; pass --is-inactive to\n" +
+			"create one that cannot log in.",
 		Flags: accountCreateFlags,
 		Exec: func(ctx context.Context, _ []string) error {
-			return createAccount(ctx, *dbDir, *accEmail, *accSecret, *accIsActive, *accIsAdmin)
+			return createAccount(ctx, *dbDir, *accEmail, *accSecret, !*accIsInactive, *accIsAdmin)
 		},
 	}
 	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountCreateCmd)
@@ -244,7 +245,7 @@ func createAccount(ctx context.Context, dbDir, email, secret string, isActive, i
 
 	fmt.Printf("created account %d %s (is_active=%t, is_admin=%t)\n", id, email, isActive, isAdmin)
 	if !isActive {
-		fmt.Println("note: account is inactive and cannot log in; re-run with --is-active to activate")
+		fmt.Println("note: account is inactive and cannot log in (created with --is-inactive)")
 	}
 	return nil
 }
