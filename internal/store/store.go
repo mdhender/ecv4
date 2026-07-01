@@ -129,6 +129,49 @@ func (s *Store) UpdateAccountByEmail(ctx context.Context, email string, upd Acco
 	return nil
 }
 
+// UpdateAccountByID applies upd to the account with the given id. It returns
+// ErrNotFound if no account has that id, and an error if upd requests no
+// changes. Only the fields set in upd are written. It mirrors
+// UpdateAccountByEmail, selecting by id instead of email.
+//
+// ctx bounds acquiring the connection and running the update.
+func (s *Store) UpdateAccountByID(ctx context.Context, id int64, upd AccountUpdate) error {
+	if upd.empty() {
+		return fmt.Errorf("update account %d: no changes requested", id)
+	}
+
+	var sets []string
+	var args []any
+	if upd.IsAdmin != nil {
+		sets = append(sets, "is_admin = ?")
+		args = append(args, boolToInt(*upd.IsAdmin))
+	}
+	if upd.IsActive != nil {
+		sets = append(sets, "is_active = ?")
+		args = append(args, boolToInt(*upd.IsActive))
+	}
+	if upd.HashedSecret != nil {
+		sets = append(sets, "hashed_secret = ?")
+		args = append(args, *upd.HashedSecret)
+	}
+	args = append(args, id)
+	query := "UPDATE accounts SET " + strings.Join(sets, ", ") + " WHERE id = ?;"
+
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("update account %d: %w", id, err)
+	}
+	defer s.pool.Put(conn)
+
+	if err := sqlitex.Execute(conn, query, &sqlitex.ExecOptions{Args: args}); err != nil {
+		return fmt.Errorf("update account %d: %w", id, err)
+	}
+	if conn.Changes() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SchemaVersion returns the database schema version: the number of migrations
 // applied to the open database, tracked by SQLite's user_version pragma and
 // maintained by sqlitemigration.

@@ -90,6 +90,80 @@ func TestUpdateAccountByEmail(t *testing.T) {
 	}
 }
 
+func TestUpdateAccountByID(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	id, err := st.CreateAccount(ctx, "byid@example.com", false, true, "oldhash")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	admin, inactive, newHash := true, false, "newhash"
+	err = st.UpdateAccountByID(ctx, id, store.AccountUpdate{
+		IsAdmin: &admin, IsActive: &inactive, HashedSecret: &newHash,
+	})
+	if err != nil {
+		t.Fatalf("UpdateAccountByID: %v", err)
+	}
+
+	account, err := st.AccountByID(ctx, id)
+	if err != nil {
+		t.Fatalf("AccountByID: %v", err)
+	}
+	if !account.IsAdmin || account.IsActive {
+		t.Fatalf("after update: %+v, want is_admin=true is_active=false", account)
+	}
+	if _, hash, _ := st.Credentials(ctx, "byid@example.com"); hash != "newhash" {
+		t.Fatalf("hash = %q, want newhash", hash)
+	}
+}
+
+func TestUpdateAccountByIDPartialLeavesOthersUnchanged(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	id, err := st.CreateAccount(ctx, "byidpartial@example.com", true, true, "keephash")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	inactive := false
+	if err := st.UpdateAccountByID(ctx, id, store.AccountUpdate{IsActive: &inactive}); err != nil {
+		t.Fatalf("UpdateAccountByID: %v", err)
+	}
+
+	account, _ := st.AccountByID(ctx, id)
+	if !account.IsAdmin {
+		t.Fatal("is_admin should remain true")
+	}
+	if account.IsActive {
+		t.Fatal("is_active should be false")
+	}
+	if _, hash, _ := st.Credentials(ctx, "byidpartial@example.com"); hash != "keephash" {
+		t.Fatalf("secret changed to %q, should be unchanged", hash)
+	}
+}
+
+func TestUpdateAccountByIDNotFound(t *testing.T) {
+	st := newStore(t)
+	active := true
+	err := st.UpdateAccountByID(context.Background(), 999, store.AccountUpdate{IsActive: &active})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateAccountByIDEmptyIsError(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	id, err := st.CreateAccount(ctx, "byidempty@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if err := st.UpdateAccountByID(ctx, id, store.AccountUpdate{}); err == nil {
+		t.Fatal("empty update should return an error")
+	}
+}
+
 func TestUpdateAccountPartialLeavesOthersUnchanged(t *testing.T) {
 	st := newStore(t)
 	ctx := context.Background()
