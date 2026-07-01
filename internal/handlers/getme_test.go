@@ -55,7 +55,7 @@ func callGetMe(t *testing.T, st *store.Store, claims auth.Claims, withClaims boo
 	if withClaims {
 		ctx = auth.WithClaims(ctx, claims)
 	}
-	resp, err := NewServer(st).GetMe(ctx, api.GetMeRequestObject{})
+	resp, err := NewServer(st, nil).GetMe(ctx, api.GetMeRequestObject{})
 	if err != nil {
 		t.Fatalf("GetMe returned error: %v", err)
 	}

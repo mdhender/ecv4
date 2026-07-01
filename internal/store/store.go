@@ -95,3 +95,42 @@ func (s *Store) AccountByID(ctx context.Context, id int64) (Account, error) {
 	}
 	return account, nil
 }
+
+// Credentials returns the account and its stored bcrypt password hash for the
+// given email, for verifying a login. It returns ErrNotFound if no account has
+// that email. The hash is returned only from this method; it never rides along
+// on the general Account type.
+//
+// ctx bounds acquiring the connection and running the query.
+func (s *Store) Credentials(ctx context.Context, email string) (Account, string, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Account{}, "", fmt.Errorf("credentials: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	var account Account
+	var hashedSecret string
+	found := false
+	err = sqlitex.Execute(conn,
+		"SELECT id, email, is_admin, is_active, hashed_secret FROM accounts WHERE email = ?;",
+		&sqlitex.ExecOptions{
+			Args: []any{email},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				found = true
+				account.ID = stmt.ColumnInt64(0)
+				account.Email = stmt.ColumnText(1)
+				account.IsAdmin = stmt.ColumnInt(2) != 0
+				account.IsActive = stmt.ColumnInt(3) != 0
+				hashedSecret = stmt.ColumnText(4)
+				return nil
+			},
+		})
+	if err != nil {
+		return Account{}, "", fmt.Errorf("credentials for %q: %w", email, err)
+	}
+	if !found {
+		return Account{}, "", ErrNotFound
+	}
+	return account, hashedSecret, nil
+}

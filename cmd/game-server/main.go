@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,6 +32,7 @@ func main() {
 	rootFlags := ff.NewFlagSet("game-server")
 	addr := rootFlags.StringLong("addr", config.DefaultAddr, "HTTP listen address")
 	dbDir := rootFlags.StringLong("db-dir", ".", "directory holding the "+database.FileName+" database (env ECV4_DB_DIR)")
+	jwtSecret := rootFlags.StringLong("jwt-secret", "", "HMAC secret (>=32 bytes) for signing JWTs (env ECV4_JWT_SECRET); if empty, a random ephemeral secret is generated")
 	rootCmd := &ff.Command{
 		Name:      "game-server",
 		Usage:     "game-server [FLAGS] <SUBCOMMAND>",
@@ -39,7 +41,7 @@ func main() {
 		// With no subcommand, run the server. This keeps `make run`
 		// (go run ./cmd/game-server) serving the skeleton as before.
 		Exec: func(ctx context.Context, _ []string) error {
-			return runServer(ctx, *addr, *dbDir)
+			return runServer(ctx, *addr, *dbDir, *jwtSecret)
 		},
 	}
 
@@ -109,8 +111,16 @@ func main() {
 // until ctx is cancelled (SIGINT/SIGTERM) or the listener fails. The database
 // pool is opened before the listener and closed only after the server has
 // drained, so in-flight requests keep a usable pool through shutdown.
-func runServer(ctx context.Context, addr, dbDir string) error {
+func runServer(ctx context.Context, addr, dbDir, jwtSecret string) error {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	secret, err := resolveJWTSecret(jwtSecret, logger)
+	if err != nil {
+		return err
+	}
+	// 15-minute access tokens, 24-hour refresh tokens. The refresh flow
+	// (/auth/refresh, /auth/logout) is not implemented yet.
+	tokens := auth.NewTokenService(secret, 15*time.Minute, 24*time.Hour)
 
 	// Open (and migrate) the database before binding the listener; a bad
 	// database should fail startup, not surface on the first request. The
@@ -131,22 +141,16 @@ func runServer(ctx context.Context, addr, dbDir string) error {
 	logger.Info("database ready", "path", dbPath)
 
 	// The store wraps the pool with typed query methods; the generated API
-	// handlers reach the database only through it.
-	apiServer := handlers.NewServer(store.New(pool))
-
-	// Placeholder bearer-token verifier: it rejects every token, so secured
-	// routes return 401 until a real JWT verifier is wired to /auth/login.
-	// Public routes (/healthz, /version, /openapi.yaml) are unaffected.
-	verifier := auth.VerifierFunc(func(string) (auth.Claims, error) {
-		return auth.Claims{}, errors.New("token verification not implemented")
-	})
+	// handlers reach the database only through it. The token service both
+	// issues tokens (for /auth/login) and verifies them (for secured routes).
+	apiServer := handlers.NewServer(store.New(pool), tokens)
 
 	// Serve the raw spec alongside the generated API routes, then let
 	// oapi-codegen register the API operations (including /healthz and
 	// /version) on the same mux.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /openapi.yaml", httputil.OpenAPIHandler("api/openapi.yaml"))
-	apiHandler := handlers.NewHTTPHandler(apiServer, mux, verifier)
+	apiHandler := handlers.NewHTTPHandler(apiServer, mux, tokens)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -175,4 +179,27 @@ func runServer(ctx context.Context, addr, dbDir string) error {
 		}
 		return nil
 	}
+}
+
+// resolveJWTSecret returns the HMAC signing key. A configured secret must be at
+// least 32 bytes (256 bits) to match HS256. When none is configured it
+// generates a random ephemeral secret and warns: this keeps `make run` working
+// in development, at the cost of invalidating all tokens on restart. Production
+// deployments must set ECV4_JWT_SECRET.
+func resolveJWTSecret(configured string, logger *slog.Logger) ([]byte, error) {
+	if configured != "" {
+		if len(configured) < 32 {
+			return nil, fmt.Errorf("jwt secret must be at least 32 bytes, got %d", len(configured))
+		}
+		return []byte(configured), nil
+	}
+
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("generate ephemeral jwt secret: %w", err)
+	}
+	logger.Warn("no jwt secret configured; generated a random ephemeral secret",
+		"consequence", "all tokens become invalid on restart",
+		"fix", "set ECV4_JWT_SECRET (>=32 bytes) for a stable signing key")
+	return secret, nil
 }

@@ -7,6 +7,9 @@ package handlers
 import (
 	"context"
 	"errors"
+	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 
 	ecv4 "github.com/mdhender/ecv4"
 	"github.com/mdhender/ecv4/internal/api"
@@ -16,13 +19,16 @@ import (
 
 var _ api.StrictServerInterface = (*Server)(nil)
 
-// Server carries the dependencies the handlers need. More are added as handlers
-// are implemented; for now it holds the store used by GetVersion.
+// Server carries the dependencies the handlers need: the store for persistence
+// and the token service for issuing and verifying JWTs.
 type Server struct {
-	store *store.Store
+	store  *store.Store
+	tokens *auth.TokenService
 }
 
-func NewServer(st *store.Store) *Server { return &Server{store: st} }
+func NewServer(st *store.Store, tokens *auth.TokenService) *Server {
+	return &Server{store: st, tokens: tokens}
+}
 
 func (s *Server) GetHealth(ctx context.Context, request api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
 	return api.GetHealth200JSONResponse{Status: "ok", Version: ecv4.Version().Short()}, nil
@@ -40,8 +46,44 @@ func (s *Server) GetVersion(ctx context.Context, request api.GetVersionRequestOb
 }
 
 func (s *Server) Login(ctx context.Context, request api.LoginRequestObject) (api.LoginResponseObject, error) {
-	// TODO: validate credentials, issue access and refresh JWTs.
-	return nil, nil
+	if request.Body == nil {
+		return loginUnauthorized("missing credentials"), nil
+	}
+
+	// Usernames are account emails, stored lower-cased.
+	email := strings.ToLower(strings.TrimSpace(request.Body.Username))
+	account, hashedSecret, err := s.store.Credentials(ctx, email)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// Same message for unknown user, wrong password, and inactive account
+		// so the response does not reveal which accounts exist.
+		return loginUnauthorized("invalid username or password"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return loginUnauthorized("invalid username or password"), nil
+	}
+
+	if bcrypt.CompareHashAndPassword([]byte(hashedSecret), []byte(request.Body.Password)) != nil {
+		return loginUnauthorized("invalid username or password"), nil
+	}
+
+	roles := roleStrings(accountRoles(account))
+	accessToken, _, err := s.tokens.IssueAccess(account.ID, account.Email, roles)
+	if err != nil {
+		return nil, err
+	}
+	refreshToken, _, err := s.tokens.IssueRefresh(account.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	return api.Login200JSONResponse{
+		AccessToken:      accessToken,
+		RefreshToken:     refreshToken,
+		TokenType:        api.Bearer,
+		ExpiresInSeconds: int(s.tokens.AccessTTL().Seconds()),
+	}, nil
 }
 
 func (s *Server) RefreshToken(ctx context.Context, request api.RefreshTokenRequestObject) (api.RefreshTokenResponseObject, error) {
@@ -74,20 +116,40 @@ func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api
 		return unauthorized("account is not active"), nil
 	}
 
-	// The accounts table carries only the admin flag; game-scoped GM/player
-	// roles live in game_account_role and surface on game endpoints, not here.
-	roles := []api.Role{api.Player}
-	if account.IsAdmin {
-		roles = []api.Role{api.Admin}
-	}
-
 	return api.GetMe200JSONResponse{
 		User: api.User{
 			Id:       account.ID,
 			Username: account.Email,
-			Roles:    roles,
+			Roles:    accountRoles(account),
 		},
 	}, nil
+}
+
+// accountRoles maps an account to its global roles. The accounts table carries
+// only the admin flag; game-scoped GM/player roles live in game_account_role
+// and surface on game endpoints, not in the global user context.
+func accountRoles(account store.Account) []api.Role {
+	if account.IsAdmin {
+		return []api.Role{api.Admin}
+	}
+	return []api.Role{api.Player}
+}
+
+// roleStrings converts API roles to the plain strings embedded in a token.
+func roleStrings(roles []api.Role) []string {
+	out := make([]string, len(roles))
+	for i, r := range roles {
+		out[i] = string(r)
+	}
+	return out
+}
+
+// loginUnauthorized builds the 401 response for Login.
+func loginUnauthorized(message string) api.Login401JSONResponse {
+	return api.Login401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code:    "unauthorized",
+		Message: message,
+	}}
 }
 
 // unauthorized builds the 401 response for GetMe with a machine-readable code.

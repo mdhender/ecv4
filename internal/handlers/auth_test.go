@@ -19,7 +19,7 @@ var rejectAll = auth.VerifierFunc(func(string) (auth.Claims, error) {
 // newTestHandler builds the routed handler with a nil store; the auth tests
 // exercise only the middleware, which runs before any handler touches the store.
 func newTestHandler(verifier auth.Verifier) http.Handler {
-	return NewHTTPHandler(NewServer(nil), http.NewServeMux(), verifier)
+	return NewHTTPHandler(NewServer(nil, nil), http.NewServeMux(), verifier)
 }
 
 func get(t *testing.T, h http.Handler, path, authz string) *httptest.ResponseRecorder {
