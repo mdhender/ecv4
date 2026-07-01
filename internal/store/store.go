@@ -232,6 +232,36 @@ func (s *Store) AccountByID(ctx context.Context, id int64) (Account, error) {
 	return account, nil
 }
 
+// ListAccounts returns all accounts ordered by id, without hashed secrets. An
+// empty table yields an empty slice, not an error.
+//
+// ctx bounds acquiring the connection and running the query; a cancelled ctx
+// interrupts the read.
+func (s *Store) ListAccounts(ctx context.Context) ([]Account, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	accounts := []Account{}
+	err = sqlitex.Execute(conn, "SELECT id, email, is_admin, is_active FROM accounts ORDER BY id;", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			accounts = append(accounts, Account{
+				ID:       stmt.ColumnInt64(0),
+				Email:    stmt.ColumnText(1),
+				IsAdmin:  stmt.ColumnInt(2) != 0,
+				IsActive: stmt.ColumnInt(3) != 0,
+			})
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	return accounts, nil
+}
+
 // Credentials returns the account and its stored bcrypt password hash for the
 // given email, for verifying a login. It returns ErrNotFound if no account has
 // that email. The hash is returned only from this method; it never rides along

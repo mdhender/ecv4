@@ -210,6 +210,45 @@ func TestUpdateAccountEmptyIsError(t *testing.T) {
 	}
 }
 
+func TestListAccounts(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+
+	// Empty table yields an empty slice, not nil and not an error.
+	got, err := st.ListAccounts(ctx)
+	if err != nil {
+		t.Fatalf("ListAccounts empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("empty table: got %d accounts, want 0", len(got))
+	}
+
+	// Create out of id order to confirm results come back ordered by id.
+	if _, err := st.CreateAccount(ctx, "second@example.com", false, true, "h2"); err != nil {
+		t.Fatalf("CreateAccount second: %v", err)
+	}
+	if _, err := st.CreateAccount(ctx, "third@example.com", true, false, "h3"); err != nil {
+		t.Fatalf("CreateAccount third: %v", err)
+	}
+
+	got, err = st.ListAccounts(ctx)
+	if err != nil {
+		t.Fatalf("ListAccounts: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d accounts, want 2", len(got))
+	}
+	if got[0].ID >= got[1].ID {
+		t.Fatalf("not ordered by id: %d then %d", got[0].ID, got[1].ID)
+	}
+	if got[0].Email != "second@example.com" || got[0].IsAdmin || !got[0].IsActive {
+		t.Fatalf("first account: %+v", got[0])
+	}
+	if got[1].Email != "third@example.com" || !got[1].IsAdmin || got[1].IsActive {
+		t.Fatalf("second account: %+v", got[1])
+	}
+}
+
 func TestLookupsNotFound(t *testing.T) {
 	st := newStore(t)
 	ctx := context.Background()
