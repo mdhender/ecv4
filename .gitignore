@@ -11,6 +11,7 @@
 /game-server
 *.out
 *.test
+/tmp/
 
 # Local config and secrets
 .env
