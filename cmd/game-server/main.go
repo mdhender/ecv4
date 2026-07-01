@@ -24,6 +24,7 @@ import (
 	"github.com/mdhender/ecv4/internal/auth"
 	"github.com/mdhender/ecv4/internal/config"
 	"github.com/mdhender/ecv4/internal/database"
+	"github.com/mdhender/ecv4/internal/dotenv"
 	"github.com/mdhender/ecv4/internal/handlers"
 	"github.com/mdhender/ecv4/internal/httputil"
 	"github.com/mdhender/ecv4/internal/phrases"
@@ -33,6 +34,19 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Load .env files before parsing flags so ff reads ECV4_* variables sourced
+	// from them. ECV4_ENV selects which files load (see internal/dotenv) and is
+	// read straight from the environment — not a flag — because it must be known
+	// before any flag is parsed. It defaults to development.
+	env := os.Getenv("ECV4_ENV")
+	if env == "" {
+		env = "development"
+	}
+	if err := dotenv.Load(env); err != nil {
+		fmt.Fprintf(os.Stderr, "error: load %q environment: %v\n", env, err)
+		os.Exit(1)
+	}
 
 	rootFlags := ff.NewFlagSet("game-server")
 	addr := rootFlags.StringLong("addr", config.DefaultAddr, "HTTP listen address")

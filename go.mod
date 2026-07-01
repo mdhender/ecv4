@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/getkin/kin-openapi v0.140.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/joho/godotenv v1.5.1
 	github.com/maloquacious/semver v0.4.0
 	github.com/oapi-codegen/runtime v1.4.2
 	github.com/peterbourgon/ff/v4 v4.0.0-beta.1

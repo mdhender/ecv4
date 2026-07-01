@@ -13,6 +13,8 @@
 *.test
 /tmp/
 
-# Local config and secrets
-.env
+# Environment files (see internal/dotenv). Only the *.local files may hold
+# secrets and are ignored; the shared .env and .env.<env> files are committed.
+.env.local
+.env.*.local
 *.local
