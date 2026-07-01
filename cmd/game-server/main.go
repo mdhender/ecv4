@@ -18,7 +18,6 @@ import (
 
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
-	"golang.org/x/crypto/bcrypt"
 
 	ecv4 "github.com/mdhender/ecv4"
 	"github.com/mdhender/ecv4/internal/auth"
@@ -152,6 +151,46 @@ func main() {
 		},
 	}
 	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountCreateCmd)
+
+	accountUpdateFlags := ff.NewFlagSet("update").SetParent(databaseAccountFlags)
+	updEmail := accountUpdateFlags.StringLong("email", "", "email of the account to update (required)")
+	updSecret := accountUpdateFlags.StringLong("secret", "", "set a new password (>= 8 characters)")
+	updGenerate := accountUpdateFlags.BoolLong("generate-secret", "set a new randomly generated password and print it")
+	updSeed := accountUpdateFlags.Uint64Long("seed", 0, "for testing: seed the generated-password RNG (only with --generate-secret)")
+	updIsActive := accountUpdateFlags.BoolLong("is-active", "set active (--is-active) or disabled (--is-active=false); omit to leave unchanged")
+	updIsAdmin := accountUpdateFlags.BoolLong("is-admin", "set admin (--is-admin) or not (--is-admin=false); omit to leave unchanged")
+	databaseAccountUpdateCmd := &ff.Command{
+		Name:      "update",
+		Usage:     "game-server database account update --email <email> [--is-active[=false]] [--is-admin[=false]] [--secret <secret> | --generate-secret]",
+		ShortHelp: "update an existing account",
+		LongHelp: "Update the account with --email in the " + database.FileName + " database inside\n" +
+			"--db-dir. --is-active and --is-admin are tri-state: omit to leave unchanged,\n" +
+			"pass --is-active to enable, or --is-active=false to disable. Change the\n" +
+			"password with --secret (>= 8 chars) or --generate-secret (prints a new random\n" +
+			"passphrase once). At least one change is required.",
+		Flags: accountUpdateFlags,
+		Exec: func(ctx context.Context, _ []string) error {
+			isSet := func(name string) bool {
+				f, ok := accountUpdateFlags.GetFlag(name)
+				return ok && f.IsSet()
+			}
+			// Tri-state booleans: a nil pointer means "leave unchanged".
+			var isActive, isAdmin *bool
+			if isSet("is-active") {
+				isActive = updIsActive
+			}
+			if isSet("is-admin") {
+				isAdmin = updIsAdmin
+			}
+			var seed *uint64
+			if isSet("seed") {
+				seed = updSeed
+			}
+			return updateAccount(ctx, *dbDir, *updEmail, isActive, isAdmin, isSet("secret"), *updSecret, *updGenerate, seed)
+		},
+	}
+	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountUpdateCmd)
+
 	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseAccountCmd)
 
 	rootCmd.Subcommands = append(rootCmd.Subcommands, databaseCmd)
@@ -260,9 +299,9 @@ func createAccount(ctx context.Context, dbDir, email, secret string, seed *uint6
 		generated = true
 	}
 
-	hashedSecret, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	hashedSecret, err := auth.HashSecret(secret)
 	if err != nil {
-		return fmt.Errorf("hash secret: %w", err)
+		return err
 	}
 
 	pool, closeDB, err := database.Open(ctx, dbDir)
@@ -271,7 +310,7 @@ func createAccount(ctx context.Context, dbDir, email, secret string, seed *uint6
 	}
 	defer closeDB()
 
-	id, err := store.New(pool).CreateAccount(ctx, email, isAdmin, isActive, string(hashedSecret))
+	id, err := store.New(pool).CreateAccount(ctx, email, isAdmin, isActive, hashedSecret)
 	if err != nil {
 		return err
 	}
@@ -283,6 +322,76 @@ func createAccount(ctx context.Context, dbDir, email, secret string, seed *uint6
 	}
 	if !isActive {
 		fmt.Println("note: account is inactive and cannot log in (created with --is-inactive)")
+	}
+	return nil
+}
+
+// updateAccount opens the database in dbDir and applies a partial update to the
+// account selected by email. isActive and isAdmin are nil to leave unchanged.
+// The password changes when secretProvided is set (to secret) or generate is
+// set (to a fresh passphrase, printed once); at most one may be requested. At
+// least one change overall is required.
+func updateAccount(ctx context.Context, dbDir, email string, isActive, isAdmin *bool, secretProvided bool, secret string, generate bool, seed *uint64) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return fmt.Errorf("account update requires --email")
+	}
+	if secretProvided && generate {
+		return fmt.Errorf("use either --secret or --generate-secret, not both")
+	}
+
+	var hashedSecret *string
+	var generatedSecret string
+	switch {
+	case secretProvided:
+		hash, err := auth.HashSecret(secret)
+		if err != nil {
+			return err
+		}
+		hashedSecret = &hash
+	case generate:
+		gen, err := generateSecret(seed)
+		if err != nil {
+			return err
+		}
+		hash, err := auth.HashSecret(gen)
+		if err != nil {
+			return err
+		}
+		hashedSecret = &hash
+		generatedSecret = gen
+	}
+
+	upd := store.AccountUpdate{IsAdmin: isAdmin, IsActive: isActive, HashedSecret: hashedSecret}
+	if upd.IsAdmin == nil && upd.IsActive == nil && upd.HashedSecret == nil {
+		return fmt.Errorf("nothing to update: set --is-active, --is-admin, --secret, or --generate-secret")
+	}
+
+	pool, closeDB, err := database.Open(ctx, dbDir)
+	if err != nil {
+		return err
+	}
+	defer closeDB()
+
+	if err := store.New(pool).UpdateAccountByEmail(ctx, email, upd); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("no account with email %q", email)
+		}
+		return err
+	}
+
+	fmt.Printf("updated account %s\n", email)
+	if isActive != nil {
+		fmt.Printf("  is_active=%t\n", *isActive)
+	}
+	if isAdmin != nil {
+		fmt.Printf("  is_admin=%t\n", *isAdmin)
+	}
+	if generatedSecret != "" {
+		fmt.Printf("  generated secret: %s\n", generatedSecret)
+		fmt.Println("  WARNING: only the hash is stored; this secret is shown once and cannot be recovered. Save it now.")
+	} else if hashedSecret != nil {
+		fmt.Println("  secret updated")
 	}
 	return nil
 }

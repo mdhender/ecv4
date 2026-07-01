@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"zombiezen.com/go/sqlite"
 	"zombiezen.com/go/sqlite/sqlitemigration"
@@ -70,6 +71,62 @@ func boolToInt(b bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+// AccountUpdate describes a partial update to an account. A nil field is left
+// unchanged; a non-nil field is written. HashedSecret, when set, must already
+// be a bcrypt hash.
+type AccountUpdate struct {
+	IsAdmin      *bool
+	IsActive     *bool
+	HashedSecret *string
+}
+
+// empty reports whether the update requests no changes.
+func (u AccountUpdate) empty() bool {
+	return u.IsAdmin == nil && u.IsActive == nil && u.HashedSecret == nil
+}
+
+// UpdateAccountByEmail applies upd to the account with the given (normalized)
+// email. It returns ErrNotFound if no account has that email, and an error if
+// upd requests no changes. Only the fields set in upd are written.
+//
+// ctx bounds acquiring the connection and running the update.
+func (s *Store) UpdateAccountByEmail(ctx context.Context, email string, upd AccountUpdate) error {
+	if upd.empty() {
+		return fmt.Errorf("update account %q: no changes requested", email)
+	}
+
+	var sets []string
+	var args []any
+	if upd.IsAdmin != nil {
+		sets = append(sets, "is_admin = ?")
+		args = append(args, boolToInt(*upd.IsAdmin))
+	}
+	if upd.IsActive != nil {
+		sets = append(sets, "is_active = ?")
+		args = append(args, boolToInt(*upd.IsActive))
+	}
+	if upd.HashedSecret != nil {
+		sets = append(sets, "hashed_secret = ?")
+		args = append(args, *upd.HashedSecret)
+	}
+	args = append(args, email)
+	query := "UPDATE accounts SET " + strings.Join(sets, ", ") + " WHERE email = ?;"
+
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("update account %q: %w", email, err)
+	}
+	defer s.pool.Put(conn)
+
+	if err := sqlitex.Execute(conn, query, &sqlitex.ExecOptions{Args: args}); err != nil {
+		return fmt.Errorf("update account %q: %w", email, err)
+	}
+	if conn.Changes() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SchemaVersion returns the database schema version: the number of migrations
