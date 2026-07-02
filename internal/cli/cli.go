@@ -214,6 +214,39 @@ func (a *App) rootCommand() *ff.Command {
 	}
 	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountUpdateCmd)
 
+	// reset-password is a discoverable alias for the password-only case of
+	// `update`: it forwards to the same updateAccount path, leaving roles and
+	// active state untouched. With neither flag it generates a fresh passphrase
+	// and prints it once, which is the common "reset it to something new" intent.
+	accountResetFlags := ff.NewFlagSet("reset-password").SetParent(databaseAccountFlags)
+	rpEmail := accountResetFlags.StringLong("email", "", "email of the account whose password to reset (required)")
+	rpSecret := accountResetFlags.StringLong("secret", "", "set this specific new password (>= 8 characters); omit to generate one")
+	rpGenerate := accountResetFlags.BoolLong("generate-secret", "generate and print a new random password (the default when --secret is omitted)")
+	rpSeed := accountResetFlags.Uint64Long("seed", 0, "for testing: seed the generated-password RNG (only when generating)")
+	databaseAccountResetCmd := &ff.Command{
+		Name:      "reset-password",
+		Usage:     "game-server database account reset-password --email <email> [--secret <secret> | --generate-secret]",
+		ShortHelp: "reset an account's password",
+		LongHelp: "Reset the password of the account with --email in the " + database.FileName + "\n" +
+			"database inside --db-dir. Roles and active state are left unchanged. Pass\n" +
+			"--secret to set a specific password, or omit it (or pass --generate-secret) to\n" +
+			"generate a new random passphrase that is printed once. This is a convenience\n" +
+			"alias for `database account update --email ... --secret/--generate-secret`.",
+		Flags: accountResetFlags,
+		Exec: func(ctx context.Context, _ []string) error {
+			secretProvided := isFlagSet(accountResetFlags, "secret")
+			// Default to generating when no specific secret was given, so
+			// `reset-password --email ...` always produces a usable new password.
+			generate := *rpGenerate || !secretProvided
+			var seed *uint64
+			if isFlagSet(accountResetFlags, "seed") {
+				seed = rpSeed
+			}
+			return a.updateAccount(ctx, *dbDir, *rpEmail, nil, nil, secretProvided, *rpSecret, generate, seed)
+		},
+	}
+	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountResetCmd)
+
 	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseAccountCmd)
 	rootCmd.Subcommands = append(rootCmd.Subcommands, databaseCmd)
 

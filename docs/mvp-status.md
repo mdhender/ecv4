@@ -13,7 +13,7 @@ scope and are not counted as gaps.
 |---|------|--------|
 | 1 | API server with authn/authz + graceful shutdown | ✅ |
 | 2 | Server-enforced admin role gating management routes | ✅ |
-| 3 | Minimal CLI: create DB, create admin, reset password | ✅ (see 3c naming) |
+| 3 | Minimal CLI: create DB, create admin, reset password | ✅ |
 | 4 | Dogfood routes (accounts, health, version, shutdown route) | ✅ (with 2 caveats) |
 
 Overall: the MVP is functionally accomplished end to end. Two design caveats and
@@ -52,17 +52,17 @@ re-read), and it can no longer log in.
 |------|--------|----------|
 | (a) create DB, incl. in-memory migration verify | ✅ | `database create <PATH>` / `:memory:` — `cmd/game-server/main.go:84` |
 | (b) create admin | ✅ | `database account create --email … --is-admin` — `cmd/game-server/main.go:145` |
-| (c) reset admin password | ⚠️ naming | no dedicated `reset-password` verb; done via `database account update --email … --generate-secret` (or `--secret`) — `cmd/game-server/main.go:180` |
+| (c) reset admin password | ✅ | dedicated `database account reset-password --email …` verb (generates a new passphrase when no `--secret`/`--generate-secret` is given), forwarding to the update path — `internal/cli/cli.go` |
 
 Live-verified against throwaway `data/claude`: created DB, created admin
 `boss@example.com`, reset via `--generate-secret` and via `--secret`, then logged
 in over HTTP with the new password.
 
-Recommendation for 3c: `update --secret/--generate-secret` fully covers reset.
-The only gap is discoverability. **Recommend** a thin `database account
-reset-password --email …` alias that forwards to the update path (trivial). Not
-required for correctness. No automated CLI tests exist (the CLI package has no
-`_test.go`); the logic it calls (`store`, `auth`) is covered.
+Resolved for 3c: a dedicated `database account reset-password --email …` verb now
+forwards to the update path (issue #3). It generates and prints a new passphrase
+when neither `--secret` nor `--generate-secret` is given. The CLI now lives in
+`internal/cli` and has automated tests, including wiring coverage for this verb
+(issue #4).
 
 ## Goal 4 — dogfood routes
 
@@ -107,7 +107,7 @@ account → `/me` → admin deactivates → deactivated account is locked out of
 | 1 | **Out-of-scope game stubs returned empty 200** (`return nil, nil` → strict layer writes nothing). Not a panic/500 — a misleading success. | **FIXED** this pass: stubs return `errNotImplemented`, mapped to 501 with the standard envelope; malformed body → 400 envelope; other errors → 500 without leaking internal text (`internal/handlers/wiring.go`, `server.go`). | done (trivial) | resolved |
 | 2 | **Shutdown 404-masking leaks via 401** to unauthenticated probes (see above). The stated "invisible in prod" goal isn't met for no-token callers. | Either accept it (401 vs 404 is a weak signal) **or** mark the op `security: []` and do all auth inside the handler so the 404 check truly runs first, **or** don't register the route at all unless `--development`. Recommend documenting the current behavior; a real fix is small. | small | [#1](https://github.com/mdhender/ecv4/issues/1) |
 | 3 | **Prod does not require a fixed JWT secret.** `resolveJWTSecret` only *warns* and generates an ephemeral secret when `ECV4_JWT_SECRET` is unset — regardless of `ECV4_ENV` — so a prod restart silently invalidates all tokens. | Fail startup when the secret is unset and `ECV4_ENV=production`. `cmd/game-server/main.go:444`. | small | [#2](https://github.com/mdhender/ecv4/issues/2) |
-| 4 | **3c has no discoverable `reset-password` verb.** | Add a `database account reset-password` alias forwarding to `updateAccount`. | trivial | [#3](https://github.com/mdhender/ecv4/issues/3) |
+| 4 | **3c has no discoverable `reset-password` verb.** | **FIXED**: added `database account reset-password --email …` forwarding to `updateAccount` (`internal/cli/cli.go`). | done (trivial) | resolved |
 | 5 | **No automated CLI tests.** `cmd/game-server` has no `_test.go`; CLI flows validated only manually. | Add a smoke test that shells the built binary against a temp DB, or extract the exec bodies into a testable package. | medium | [#4](https://github.com/mdhender/ecv4/issues/4) |
 | 6 | **Refresh-token table has no cleanup** (accepted earlier). Rows accumulate; expired/revoked tokens are never pruned. | Note only; add a periodic prune later. | small (later) | [#5](https://github.com/mdhender/ecv4/issues/5) |
 | 7 | **Dev JWT secret is ephemeral by design** when unset — every restart invalidates tokens. Intended for `make run`/air. | No change; documented in code and here. | n/a | works as intended |
