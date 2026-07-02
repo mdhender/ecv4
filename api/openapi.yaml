@@ -521,10 +521,16 @@ paths:
       operationId: updateGameMember
       summary: Update a game member
       description: |
-        Applies a partial update to an existing membership. Each field carries its
-        own rule from the action matrix:
-          - isActive: only true (reactivate a dropped member). Admin or an active
-            GM, any status except archived. Reactivation resumes the existing row.
+        Applies a partial update to an existing membership. Drop/self-deactivate is
+        folded in here as isActive:false rather than a separate DELETE route, to
+        keep the surface small. Each field carries its own rule from the action
+        matrix:
+          - isActive: reactivate (true) or drop (false). Reactivate resumes a
+            dropped member and needs an admin or an active GM (players cannot
+            reactivate themselves). Drop soft-deactivates the row (never a physical
+            delete): a member may drop themselves at any time, and an admin or an
+            active GM may drop another — dropping can legitimately leave the game
+            with no active GM or player. Neither is allowed once archived.
           - isGm: only true (promote a player to GM). Admin or an active GM,
             recruiting only (an admin bypasses that window). Demotion is not
             supported.
@@ -1088,14 +1094,14 @@ components:
       type: object
       description: |
         Partial update to a game membership; any subset of fields may be set and an
-        omitted field is left unchanged. isActive may only be set to true
-        (reactivate a dropped member); isGm may only be set to true (promote a
-        player to GM) — demotion and deactivation are not supported here. A handle
-        edited by the member themselves may not begin with 'player_'.
+        omitted field is left unchanged. isActive reactivates (true) or drops
+        (false) the member; isGm may only be set to true (promote a player to GM) —
+        demotion is not supported. A handle edited by the member themselves may not
+        begin with 'player_'.
       properties:
         isActive:
           type: boolean
-          description: Set true to reactivate a dropped member.
+          description: Set true to reactivate a dropped member, or false to drop (deactivate) them.
         isGm:
           type: boolean
           description: Set true to promote a player to game master.

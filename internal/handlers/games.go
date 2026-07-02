@@ -320,18 +320,32 @@ func (s *Server) UpdateGameMember(ctx context.Context, request api.UpdateGameMem
 
 	var upd store.MemberUpdate
 
-	// isActive: reactivate only. Deactivation (dropping a member) is a separate
-	// operation and is rejected here.
+	// isActive: reactivate (true) or drop / self-deactivate (false). Only an actual
+	// change is applied and authorized.
 	if body.IsActive != nil {
-		if !*body.IsActive {
-			return updateMemberBadRequest("deactivating a member is not supported here"), nil
-		}
-		if !target.IsActive { // an actual reactivation
-			if !(account.IsAdmin || activeGM) {
-				return updateMemberForbidden("only an active game master or an admin may reactivate a member"), nil
+		if *body.IsActive {
+			// Reactivate a dropped member: admin or an active GM. A player cannot
+			// reactivate themselves — coming back is not self-service.
+			if !target.IsActive {
+				if !(account.IsAdmin || activeGM) {
+					return updateMemberForbidden("only an active game master or an admin may reactivate a member"), nil
+				}
+				v := true
+				upd.IsActive = &v
 			}
-			v := true
-			upd.IsActive = &v
+		} else {
+			// Drop (soft-deactivate; the row is never physically deleted): a member
+			// may drop their own role at any time, and an admin or an active GM may
+			// drop another member. This can legitimately leave the game with no active
+			// GM or player — accepted; admin is the recovery path. activeGM already
+			// includes admins.
+			if target.IsActive {
+				if !(isSelf || activeGM) {
+					return updateMemberForbidden("only the member, an active game master, or an admin may drop a member"), nil
+				}
+				v := false
+				upd.IsActive = &v
+			}
 		}
 	}
 
