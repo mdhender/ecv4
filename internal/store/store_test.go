@@ -5,18 +5,42 @@ import (
 	"errors"
 	"testing"
 
+	"zombiezen.com/go/sqlite/sqlitemigration"
+	"zombiezen.com/go/sqlite/sqlitex"
+
 	"github.com/mdhender/ecv4/internal/database"
 	"github.com/mdhender/ecv4/internal/store"
 )
 
 func newStore(t *testing.T) *store.Store {
 	t.Helper()
+	st, _ := newStorePool(t)
+	return st
+}
+
+// newStorePool is newStore but also hands back the pool, for tests that seed
+// tables the store has no writer for (games, game_account_role).
+func newStorePool(t *testing.T) (*store.Store, *sqlitemigration.Pool) {
+	t.Helper()
 	pool, err := database.CreateSharedMemory(context.Background(), "")
 	if err != nil {
 		t.Fatalf("CreateSharedMemory: %v", err)
 	}
 	t.Cleanup(func() { pool.Close() })
-	return store.New(pool)
+	return store.New(pool), pool
+}
+
+// exec runs a statement against the pool, failing the test on error.
+func exec(t *testing.T, pool *sqlitemigration.Pool, query string, args ...any) {
+	t.Helper()
+	conn, err := pool.Get(context.Background())
+	if err != nil {
+		t.Fatalf("get conn: %v", err)
+	}
+	defer pool.Put(conn)
+	if err := sqlitex.Execute(conn, query, &sqlitex.ExecOptions{Args: args}); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
+	}
 }
 
 func TestCreateAccountAndLookup(t *testing.T) {
@@ -419,6 +443,55 @@ func TestPurgeExpiredRefreshTokens(t *testing.T) {
 	// A second sweep at the same cutoff removes nothing (idempotent).
 	if purged, err := st.PurgeExpiredRefreshTokens(ctx, 100); err != nil || purged != 0 {
 		t.Fatalf("second purge = (%d, %v), want (0, nil)", purged, err)
+	}
+}
+
+func TestGamesForAccount(t *testing.T) {
+	st, pool := newStorePool(t)
+	ctx := context.Background()
+
+	// Two accounts: 1 is the caller under test, 2 is a bystander whose
+	// memberships must not leak into the caller's list.
+	exec(t, pool, "INSERT INTO accounts(id, email, is_admin, is_active, hashed_secret) VALUES(1, 'me@example.com', 0, 1, 'x');")
+	exec(t, pool, "INSERT INTO accounts(id, email, is_admin, is_active, hashed_secret) VALUES(2, 'other@example.com', 0, 1, 'x');")
+
+	// alpha (active) and beta (inactive/archived). The caller is a GM in alpha
+	// and a player in beta; the archived game must still appear.
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(10, 'alpha', 1);")
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(20, 'beta', 0);")
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(30, 'gamma', 1);")
+
+	exec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(10, 1, 'Overlord', 1, 1);")
+	exec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(20, 1, 'Rome', 0, 1);")
+	// A dropped membership (is_active = 0) must be excluded.
+	exec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(30, 1, 'Carthage', 0, 0);")
+	// The bystander is in alpha; it must not surface for the caller.
+	exec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(10, 2, 'Egypt', 0, 1);")
+
+	got, err := st.GamesForAccount(ctx, 1)
+	if err != nil {
+		t.Fatalf("GamesForAccount: %v", err)
+	}
+	want := []store.GameMembership{
+		{GameID: 10, Slug: "alpha", IsActive: true, Handle: "Overlord", IsGM: true},
+		{GameID: 20, Slug: "beta", IsActive: false, Handle: "Rome", IsGM: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d memberships, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("membership %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// An account in no games yields an empty slice, not an error.
+	none, err := st.GamesForAccount(ctx, 999)
+	if err != nil {
+		t.Fatalf("GamesForAccount(unknown): %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("got %d memberships for unknown account, want 0", len(none))
 	}
 }
 

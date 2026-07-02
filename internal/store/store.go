@@ -404,6 +404,60 @@ func (s *Store) ListAccounts(ctx context.Context) ([]Account, error) {
 	return accounts, nil
 }
 
+// GameMembership projects one row of the game_account_role bridge joined to its
+// game: a game the account participates in, together with the account's handle
+// and game-master status in that game. Slug is the game's code; IsActive is the
+// game's own active flag (not the membership's).
+type GameMembership struct {
+	GameID   int64
+	Slug     string
+	IsActive bool
+	Handle   string
+	IsGM     bool
+}
+
+// GamesForAccount returns the games the account is currently a member of, one
+// GameMembership per active membership, ordered by game id. A membership that
+// has been dropped (game_account_role.is_active = 0) is excluded; the game's own
+// is_active flag is reported in IsActive rather than filtered on, so a member of
+// an archived game still sees it. An account in no games yields an empty slice,
+// not an error.
+//
+// ctx bounds acquiring the connection and running the query; a cancelled ctx
+// interrupts the read.
+func (s *Store) GamesForAccount(ctx context.Context, accountID int64) ([]GameMembership, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("games for account: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	memberships := []GameMembership{}
+	err = sqlitex.Execute(conn,
+		`SELECT g.id, g.code, g.is_active, r.handle, r.is_gm
+			FROM game_account_role r
+			JOIN games g ON g.id = r.game_id
+			WHERE r.account_id = ? AND r.is_active = 1
+			ORDER BY g.id;`,
+		&sqlitex.ExecOptions{
+			Args: []any{accountID},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				memberships = append(memberships, GameMembership{
+					GameID:   stmt.ColumnInt64(0),
+					Slug:     stmt.ColumnText(1),
+					IsActive: stmt.ColumnInt(2) != 0,
+					Handle:   stmt.ColumnText(3),
+					IsGM:     stmt.ColumnInt(4) != 0,
+				})
+				return nil
+			},
+		})
+	if err != nil {
+		return nil, fmt.Errorf("games for account %d: %w", accountID, err)
+	}
+	return memberships, nil
+}
+
 // Credentials returns the account and its stored bcrypt password hash for the
 // given email, for verifying a login. It returns ErrNotFound if no account has
 // that email. The hash is returned only from this method; it never rides along

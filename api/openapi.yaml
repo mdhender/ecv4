@@ -137,6 +137,26 @@ paths:
                 $ref: '#/components/schemas/MeResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /me/games:
+    get:
+      tags: [Me]
+      operationId: listMyGames
+      summary: List the games the authenticated user participates in
+      description: |
+        Returns the games the caller is currently a member of, each with the
+        caller's handle in that game and whether they are its game master.
+        Scoped to the caller (self-service); no admin role is required. This is
+        a read-only projection of the caller's memberships and runs no game
+        logic.
+      responses:
+        '200':
+          description: The caller's games
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMyGamesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /accounts:
     get:
       tags: [Accounts]
@@ -751,6 +771,38 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Game'
+    MyGame:
+      type: object
+      description: |
+        A game the authenticated user participates in, projected together with
+        the caller's membership in it (handle and game-master status).
+      required: [id, slug, isActive, handle, isGm]
+      properties:
+        id:
+          type: integer
+          format: int64
+        slug:
+          type: string
+          description: The game's stable code.
+          example: alpha
+        isActive:
+          type: boolean
+          description: Whether the game itself is active.
+        handle:
+          type: string
+          description: The caller's handle within this game.
+          example: Rome
+        isGm:
+          type: boolean
+          description: Whether the caller is a game master in this game.
+    ListMyGamesResponse:
+      type: object
+      required: [games]
+      properties:
+        games:
+          type: array
+          items:
+            $ref: '#/components/schemas/MyGame'
     ListAccountsResponse:
       type: object
       required: [accounts]
