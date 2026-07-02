@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/mdhender/ecv4/internal/api"
+	"github.com/mdhender/ecv4/internal/auth"
 	"github.com/mdhender/ecv4/internal/store"
 )
 
@@ -57,6 +58,71 @@ func (s *Server) CreateGame(ctx context.Context, request api.CreateGameRequestOb
 	}
 
 	return api.CreateGame201JSONResponse(apiGame(game)), nil
+}
+
+// ListGameMembers returns a game's roster — every assignment, GMs and players,
+// active and dropped — when the game is visible to the caller. Visibility is the
+// same rule GetGame applies: an admin sees any game; a non-admin only a game they
+// were ever assigned to that is not admin-hidden. An unknown or not-visible game
+// is a 404, so a non-member cannot probe for a game's existence. Like the other
+// authenticated handlers it re-reads fresh account state rather than trusting the
+// token.
+func (s *Server) ListGameMembers(ctx context.Context, request api.ListGameMembersRequestObject) (api.ListGameMembersResponseObject, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return listMembersUnauthorized("missing credentials"), nil
+	}
+
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return listMembersUnauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return listMembersUnauthorized("account is not active"), nil
+	}
+
+	// Gate on visibility with the same rule as GetGame: reusing GameByID means the
+	// roster read can never reveal a game the caller may not see, and an unknown or
+	// not-visible game is an indistinguishable 404.
+	if _, err := s.store.GameByID(ctx, request.GameId, account.ID, account.IsAdmin); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return api.ListGameMembers404JSONResponse{NotFoundJSONResponse: api.NotFoundJSONResponse{
+				Code: "not_found", Message: "game not found",
+			}}, nil
+		}
+		return nil, err
+	}
+
+	members, err := s.store.MembersForGame(ctx, request.GameId)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]api.Member, len(members))
+	for i, m := range members {
+		out[i] = apiMember(m)
+	}
+	return api.ListGameMembers200JSONResponse{Members: out}, nil
+}
+
+// apiMember maps a store roster member to its API representation.
+func apiMember(m store.Member) api.Member {
+	return api.Member{
+		AccountId: m.AccountID,
+		Handle:    m.Handle,
+		IsGm:      m.IsGM,
+		IsActive:  m.IsActive,
+	}
+}
+
+// listMembersUnauthorized builds the 401 response for ListGameMembers.
+func listMembersUnauthorized(message string) api.ListGameMembers401JSONResponse {
+	return api.ListGameMembers401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code:    "unauthorized",
+		Message: message,
+	}}
 }
 
 // apiGame maps a store game to its API representation.

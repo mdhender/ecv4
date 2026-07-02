@@ -695,6 +695,55 @@ func (s *Store) GameByID(ctx context.Context, id, accountID int64, isAdmin bool)
 	return game, nil
 }
 
+// Member is one row of a game's roster: an account's assignment to a game (a
+// game_account_role row) with its handle and role. IsActive is the membership's
+// own flag — false for a dropped member, who remains listed rather than deleted.
+type Member struct {
+	AccountID int64
+	Handle    string
+	IsGM      bool
+	IsActive  bool
+}
+
+// MembersForGame returns every membership row for the game — active and dropped
+// alike — ordered by the membership row id (assignment order), so a GM sees who
+// has left as well as who remains. It neither filters on the game's own is_active
+// flag nor checks visibility; callers gate access to the game first. A game with
+// no members, or one that does not exist, yields an empty slice, not an error.
+//
+// ctx bounds acquiring the connection and running the query; a cancelled ctx
+// interrupts the read.
+func (s *Store) MembersForGame(ctx context.Context, gameID int64) ([]Member, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("members for game: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	members := []Member{}
+	err = sqlitex.Execute(conn,
+		`SELECT r.account_id, r.handle, r.is_gm, r.is_active
+			FROM game_account_role r
+			WHERE r.game_id = ?
+			ORDER BY r.id;`,
+		&sqlitex.ExecOptions{
+			Args: []any{gameID},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				members = append(members, Member{
+					AccountID: stmt.ColumnInt64(0),
+					Handle:    stmt.ColumnText(1),
+					IsGM:      stmt.ColumnInt(2) != 0,
+					IsActive:  stmt.ColumnInt(3) != 0,
+				})
+				return nil
+			},
+		})
+	if err != nil {
+		return nil, fmt.Errorf("members for game %d: %w", gameID, err)
+	}
+	return members, nil
+}
+
 // Credentials returns the account and its stored bcrypt password hash for the
 // given email, for verifying a login. It returns ErrNotFound if no account has
 // that email. The hash is returned only from this method; it never rides along
