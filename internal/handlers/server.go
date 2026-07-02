@@ -115,13 +115,97 @@ func (s *Server) issueRefresh(ctx context.Context, accountID int64, family strin
 }
 
 func (s *Server) RefreshToken(ctx context.Context, request api.RefreshTokenRequestObject) (api.RefreshTokenResponseObject, error) {
-	// TODO: validate refresh token and issue replacement tokens.
-	return nil, nil
+	if request.Body == nil || request.Body.RefreshToken == "" {
+		return refreshUnauthorized("missing refresh token"), nil
+	}
+
+	// A valid signature with the refresh audience and unexpired claims; garbage,
+	// expired, tampered, or access-audience tokens all fail here.
+	claims, err := s.tokens.VerifyRefresh(request.Body.RefreshToken)
+	if err != nil {
+		return refreshUnauthorized("invalid refresh token"), nil
+	}
+
+	rec, err := s.store.RefreshTokenByJTI(ctx, claims.JTI)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// A validly signed token we hold no record of: treat it as unusable.
+		return refreshUnauthorized("invalid refresh token"), nil
+	case err != nil:
+		return nil, err
+	}
+
+	if rec.Revoked {
+		// The token verified but was already rotated away or logged out.
+		// Presenting it again is the reuse/theft signal: revoke the whole family
+		// so a stolen token cannot be traded for fresh sessions.
+		if err := s.store.RevokeFamily(ctx, rec.FamilyID); err != nil {
+			return nil, err
+		}
+		return refreshUnauthorized("invalid refresh token"), nil
+	}
+
+	// Re-read fresh account state rather than trusting the token: never rotate a
+	// token for an account that has since been removed or deactivated.
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return refreshUnauthorized("invalid refresh token"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return refreshUnauthorized("invalid refresh token"), nil
+	}
+
+	// Rotate: mint a new access + refresh token in the SAME family, persist the
+	// new refresh row, then revoke the old jti last so a mid-rotation failure
+	// leaves the presented token still usable.
+	roles := roleStrings(accountRoles(account))
+	accessToken, _, err := s.tokens.IssueAccess(account.ID, account.Email, roles)
+	if err != nil {
+		return nil, err
+	}
+	refreshToken, err := s.issueRefresh(ctx, account.ID, rec.FamilyID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.RevokeRefreshToken(ctx, claims.JTI); err != nil {
+		return nil, err
+	}
+
+	return api.RefreshToken200JSONResponse{
+		AccessToken:      accessToken,
+		RefreshToken:     refreshToken,
+		TokenType:        api.Bearer,
+		ExpiresInSeconds: int(s.tokens.AccessTTL().Seconds()),
+	}, nil
 }
 
 func (s *Server) Logout(ctx context.Context, request api.LogoutRequestObject) (api.LogoutResponseObject, error) {
-	// TODO: revoke refresh token/session family.
-	return nil, nil
+	// This route is secured, so verified claims are in the context; their
+	// absence means the request somehow reached here unauthenticated.
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return api.Logout401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+			Code: "unauthorized", Message: "missing credentials",
+		}}, nil
+	}
+
+	// With a specific refresh token, revoke just that session's family (and only
+	// if it belongs to the caller). Without one, there is nothing to scope to,
+	// so log the caller out everywhere. Both paths are idempotent: an absent,
+	// unverifiable, or already-revoked token still returns 204.
+	if request.Body != nil && request.Body.RefreshToken != nil && *request.Body.RefreshToken != "" {
+		if rc, err := s.tokens.VerifyRefresh(*request.Body.RefreshToken); err == nil && rc.UserID == claims.UserID {
+			if err := s.store.RevokeFamily(ctx, rc.Family); err != nil {
+				return nil, err
+			}
+		}
+	} else if err := s.store.RevokeAllForAccount(ctx, claims.UserID); err != nil {
+		return nil, err
+	}
+
+	return api.Logout204Response{}, nil
 }
 
 func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api.GetMeResponseObject, error) {
@@ -175,6 +259,16 @@ func roleStrings(roles []api.Role) []string {
 // loginUnauthorized builds the 401 response for Login.
 func loginUnauthorized(message string) api.Login401JSONResponse {
 	return api.Login401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code:    "unauthorized",
+		Message: message,
+	}}
+}
+
+// refreshUnauthorized builds the 401 response for RefreshToken. Every refusal
+// uses the same generic message so the response never distinguishes an unknown,
+// expired, revoked, or reused token.
+func refreshUnauthorized(message string) api.RefreshToken401JSONResponse {
+	return api.RefreshToken401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
 		Code:    "unauthorized",
 		Message: message,
 	}}
