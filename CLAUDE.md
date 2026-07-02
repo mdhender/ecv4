@@ -83,8 +83,9 @@ or `ECV4_`-prefixed env vars.
 
 `.env` files load before flags are parsed, selected by `ECV4_ENV` (default
 `development`); `internal/dotenv` handles precedence. Notable vars: `ECV4_DB_DIR`,
-`ECV4_JWT_SECRET` (must be ≥32 bytes for HS256; if unset a random ephemeral secret
-is generated and all tokens die on restart — set it in production),
+`ECV4_JWT_SECRET` (must be ≥32 bytes for HS256; required when `ECV4_ENV=production`
+— startup fails if unset there; in any other environment an unset secret yields a
+random ephemeral one that dies on restart),
 `ECV4_DEVELOPMENT`, and `ECV4_DEVELOPMENT_ADMIN_EMAIL` / `ECV4_DEVELOPMENT_ADMIN_SECRET`
 (used only by the `--development` admin seed).
 
