@@ -269,6 +269,30 @@ func (s *Server) ShutdownServer(ctx context.Context, request api.ShutdownServerR
 	return api.ShutdownServer202Response{}, nil
 }
 
+func (s *Server) PurgeRefreshTokens(ctx context.Context, request api.PurgeRefreshTokensRequestObject) (api.PurgeRefreshTokensResponseObject, error) {
+	// Admin only, re-reading fresh account state like the other admin routes.
+	if _, authErr, err := s.requireAdmin(ctx); err != nil {
+		return nil, err
+	} else if authErr != nil {
+		if authErr.forbidden {
+			return api.PurgeRefreshTokens403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
+				Code: "forbidden", Message: authErr.message,
+			}}, nil
+		}
+		return api.PurgeRefreshTokens401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+			Code: "unauthorized", Message: authErr.message,
+		}}, nil
+	}
+
+	// Purge everything already expired as of now (the token service's clock, so
+	// this matches issuance/verification and is deterministic under WithClock).
+	purged, err := s.store.PurgeExpiredRefreshTokens(ctx, s.tokens.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	return api.PurgeRefreshTokens200JSONResponse{Purged: purged}, nil
+}
+
 func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api.GetMeResponseObject, error) {
 	// The bearer-auth middleware puts verified claims in the context; their
 	// absence means the request reached here unauthenticated.

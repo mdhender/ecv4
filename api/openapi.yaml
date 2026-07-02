@@ -254,6 +254,32 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/refresh-tokens/purge:
+    post:
+      tags: [Admin]
+      operationId: purgeRefreshTokens
+      summary: Purge expired refresh tokens
+      description: |
+        Admin only. Deletes refresh-token records that have already expired,
+        reclaiming space in the refresh_tokens table. Expired tokens no longer
+        authenticate — they fail signature/expiry verification before any store
+        lookup — so removing them affects neither active sessions nor
+        theft/reuse detection. Revoked-but-unexpired tokens are intentionally
+        retained, since presenting one is the reuse signal that revokes a
+        session family. Returns the number of records removed. A background
+        reaper performs the same purge periodically; this endpoint runs it on
+        demand.
+      responses:
+        '200':
+          description: Purge completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeRefreshTokensResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /games:
     get:
       tags: [Games]
@@ -549,6 +575,16 @@ components:
           minimum: 0
           description: Number of schema migrations applied to the open database (SQLite user_version).
           example: 4
+    PurgeRefreshTokensResponse:
+      type: object
+      required: [purged]
+      properties:
+        purged:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of expired refresh-token records removed.
+          example: 12
     LoginRequest:
       type: object
       required: [username, password]
