@@ -57,10 +57,10 @@ func TestSecuredRouteAcceptsValidToken(t *testing.T) {
 	accept := auth.VerifierFunc(func(string) (auth.Claims, error) {
 		return auth.Claims{UserID: 1, Username: "demo", ExpiresAt: time.Now().Add(time.Hour)}, nil
 	})
-	// A valid token clears the middleware. Target /games — a still-stubbed
+	// A valid token clears the middleware. Target /games/1/turns — a still-stubbed
 	// secured route that does not touch the store — so this stays a test of the
 	// auth middleware, not of any handler. The point is that it is NOT 401.
-	if rr := get(t, newTestHandler(accept), "/games", "Bearer good"); rr.Code == http.StatusUnauthorized {
-		t.Fatalf("GET /games with valid token was rejected (401); auth should have passed it through")
+	if rr := get(t, newTestHandler(accept), "/games/1/turns", "Bearer good"); rr.Code == http.StatusUnauthorized {
+		t.Fatalf("GET /games/1/turns with valid token was rejected (401); auth should have passed it through")
 	}
 }

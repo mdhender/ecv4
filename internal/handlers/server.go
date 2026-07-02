@@ -523,14 +523,98 @@ func unauthorized(message string) api.GetMe401JSONResponse {
 	}}
 }
 
+// ListGames returns the games visible to the authenticated caller under the
+// game-management visibility rules: a non-admin sees every game they were ever
+// assigned to (active or dropped membership) except admin-hidden ones, while an
+// admin sees every game including hidden ones. The optional status query
+// parameter narrows the result to one lifecycle status. The store applies the
+// visibility itself; the handler only resolves the caller and, like the other
+// /me-style handlers, re-reads fresh account state rather than trusting the token.
 func (s *Server) ListGames(ctx context.Context, request api.ListGamesRequestObject) (api.ListGamesResponseObject, error) {
-	// TODO: list games visible to the authenticated user.
-	return nil, errNotImplemented
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return listGamesUnauthorized("missing credentials"), nil
+	}
+
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return listGamesUnauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return listGamesUnauthorized("account is not active"), nil
+	}
+
+	games, err := s.store.ListGames(ctx, account.ID, account.IsAdmin, gameStatusFilter(request.Params.Status))
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]api.Game, len(games))
+	for i, g := range games {
+		out[i] = apiGame(g)
+	}
+	return api.ListGames200JSONResponse{Games: out}, nil
 }
 
+// GetGame returns a single game's metadata when it is visible to the caller.
+// Visibility is the same rule as ListGames applied to one game: an admin sees any
+// game; a non-admin sees a game only if they were ever assigned to it and it is
+// not admin-hidden. An unknown or not-visible game is a 404, so a non-admin
+// cannot distinguish a game that does not exist from one they may not see.
 func (s *Server) GetGame(ctx context.Context, request api.GetGameRequestObject) (api.GetGameResponseObject, error) {
-	// TODO: enforce object-level authorization and return game.
-	return nil, errNotImplemented
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return getGameUnauthorized("missing credentials"), nil
+	}
+
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return getGameUnauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return getGameUnauthorized("account is not active"), nil
+	}
+
+	game, err := s.store.GameByID(ctx, request.GameId, account.ID, account.IsAdmin)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return api.GetGame404JSONResponse{NotFoundJSONResponse: api.NotFoundJSONResponse{
+			Code: "not_found", Message: "game not found",
+		}}, nil
+	case err != nil:
+		return nil, err
+	}
+	return api.GetGame200JSONResponse(apiGame(game)), nil
+}
+
+// gameStatusFilter converts the optional ListGames status query parameter to the
+// plain-string filter the store expects, preserving a nil (no filter).
+func gameStatusFilter(status *api.GameStatus) *string {
+	if status == nil {
+		return nil
+	}
+	s := string(*status)
+	return &s
+}
+
+// listGamesUnauthorized builds the 401 response for ListGames.
+func listGamesUnauthorized(message string) api.ListGames401JSONResponse {
+	return api.ListGames401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code:    "unauthorized",
+		Message: message,
+	}}
+}
+
+// getGameUnauthorized builds the 401 response for GetGame.
+func getGameUnauthorized(message string) api.GetGame401JSONResponse {
+	return api.GetGame401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code:    "unauthorized",
+		Message: message,
+	}}
 }
 
 func (s *Server) ListTurns(ctx context.Context, request api.ListTurnsRequestObject) (api.ListTurnsResponseObject, error) {

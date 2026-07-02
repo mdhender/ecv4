@@ -23,9 +23,12 @@ func TestUnimplementedStubReturns501(t *testing.T) {
 		t.Fatalf("IssueAccess: %v", err)
 	}
 
-	rr := doJSON(t, handler, http.MethodGet, "/games", access, nil)
+	// Target a still-stubbed engine route (turn reads are out of scope). The game
+	// read handlers /games and /games/{id} are implemented now, so they no longer
+	// exercise the 501 path.
+	rr := doJSON(t, handler, http.MethodGet, "/games/1/turns", access, nil)
 	if rr.Code != http.StatusNotImplemented {
-		t.Fatalf("GET /games: got %d, want 501 (body %q)", rr.Code, rr.Body.String())
+		t.Fatalf("GET /games/1/turns: got %d, want 501 (body %q)", rr.Code, rr.Body.String())
 	}
 
 	var body api.ErrorResponse
