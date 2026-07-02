@@ -288,6 +288,32 @@ func (s *Store) revoke(ctx context.Context, whereCol string, arg any, op string)
 	return nil
 }
 
+// PurgeExpiredRefreshTokens deletes refresh-token rows whose expires_at is at or
+// before cutoff (unix seconds), returning the number of rows removed. Callers
+// pass the current time as cutoff.
+//
+// It prunes strictly by expiry, not by the revoked flag: an expired token can no
+// longer authenticate (VerifyRefresh rejects it on expiry before this table is
+// ever consulted), so dropping it changes nothing observable. A revoked but
+// still-unexpired token is deliberately kept — presenting it is the reuse/theft
+// signal that revokes the whole family — so it must survive until it expires.
+//
+// ctx bounds acquiring the connection and running the delete.
+func (s *Store) PurgeExpiredRefreshTokens(ctx context.Context, cutoff int64) (int64, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("purge expired refresh tokens: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	if err := sqlitex.Execute(conn,
+		"DELETE FROM refresh_tokens WHERE expires_at <= ?;",
+		&sqlitex.ExecOptions{Args: []any{cutoff}}); err != nil {
+		return 0, fmt.Errorf("purge expired refresh tokens: %w", err)
+	}
+	return int64(conn.Changes()), nil
+}
+
 // SchemaVersion returns the database schema version: the number of migrations
 // applied to the open database, tracked by SQLite's user_version pragma and
 // maintained by sqlitemigration.

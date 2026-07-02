@@ -372,6 +372,56 @@ func TestRevokeAllForAccount(t *testing.T) {
 	}
 }
 
+func TestPurgeExpiredRefreshTokens(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	acct, err := st.CreateAccount(ctx, "purge@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	// expires_at relative to a cutoff of 100: two already expired (one revoked,
+	// one not), one expiring exactly at the cutoff (also purged, since the
+	// boundary is inclusive), and one still valid.
+	if err := st.CreateRefreshToken(ctx, "old-live", "fam", acct, 1, 50); err != nil {
+		t.Fatalf("create old-live: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "old-revoked", "fam", acct, 1, 60); err != nil {
+		t.Fatalf("create old-revoked: %v", err)
+	}
+	if err := st.RevokeRefreshToken(ctx, "old-revoked"); err != nil {
+		t.Fatalf("revoke old-revoked: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "at-cutoff", "fam", acct, 1, 100); err != nil {
+		t.Fatalf("create at-cutoff: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "future", "fam", acct, 1, 200); err != nil {
+		t.Fatalf("create future: %v", err)
+	}
+
+	purged, err := st.PurgeExpiredRefreshTokens(ctx, 100)
+	if err != nil {
+		t.Fatalf("PurgeExpiredRefreshTokens: %v", err)
+	}
+	if purged != 3 {
+		t.Fatalf("purged = %d, want 3", purged)
+	}
+
+	for _, jti := range []string{"old-live", "old-revoked", "at-cutoff"} {
+		if _, err := st.RefreshTokenByJTI(ctx, jti); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("%q should be gone: err=%v", jti, err)
+		}
+	}
+	if _, err := st.RefreshTokenByJTI(ctx, "future"); err != nil {
+		t.Fatalf("future token should survive: %v", err)
+	}
+
+	// A second sweep at the same cutoff removes nothing (idempotent).
+	if purged, err := st.PurgeExpiredRefreshTokens(ctx, 100); err != nil || purged != 0 {
+		t.Fatalf("second purge = (%d, %v), want (0, nil)", purged, err)
+	}
+}
+
 func TestLookupsNotFound(t *testing.T) {
 	st := newStore(t)
 	ctx := context.Background()

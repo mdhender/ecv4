@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"time"
 
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
@@ -67,6 +68,10 @@ func (a *App) rootCommand() *ff.Command {
 	// deliberately independent of --development so docs can be exposed (or not)
 	// on any deployment without also enabling the development-only shutdown route.
 	allowDocs := rootFlags.BoolLong("allow-openapi-docs", "serve the interactive OpenAPI docs (Swagger UI) at /docs (env ECV4_ALLOW_OPENAPI_DOCS)")
+	// How often the background reaper prunes expired refresh tokens while
+	// serving. 0 disables the reaper (the on-demand POST /admin/refresh-tokens/purge
+	// still works).
+	reapInterval := rootFlags.DurationLong("session-reap-interval", 15*time.Minute, "interval between background purges of expired refresh tokens; 0 disables the reaper (env ECV4_SESSION_REAP_INTERVAL)")
 	rootCmd := &ff.Command{
 		Name:      "game-server",
 		Usage:     "game-server [FLAGS] <SUBCOMMAND>",
@@ -75,7 +80,7 @@ func (a *App) rootCommand() *ff.Command {
 		// With no subcommand, run the server. This keeps `make run`
 		// (go run ./cmd/game-server) serving the skeleton as before.
 		Exec: func(ctx context.Context, _ []string) error {
-			return a.runServer(ctx, *addr, *dbDir, *jwtSecret, *development, *allowDocs)
+			return a.runServer(ctx, *addr, *dbDir, *jwtSecret, *development, *allowDocs, *reapInterval)
 		},
 	}
 

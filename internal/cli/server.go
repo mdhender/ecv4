@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/mdhender/ecv4/internal/auth"
@@ -21,7 +22,10 @@ import (
 // until ctx is cancelled (SIGINT/SIGTERM) or the listener fails. The database
 // pool is opened before the listener and closed only after the server has
 // drained, so in-flight requests keep a usable pool through shutdown.
-func (a *App) runServer(ctx context.Context, addr, dbDir, jwtSecret string, development, allowDocs bool) error {
+//
+// reapInterval sets how often the background refresh-token reaper runs; 0
+// disables it (the on-demand purge endpoint still works).
+func (a *App) runServer(ctx context.Context, addr, dbDir, jwtSecret string, development, allowDocs bool, reapInterval time.Duration) error {
 	logger := slog.New(slog.NewTextHandler(a.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	secret, err := resolveJWTSecret(a.Env, jwtSecret, logger)
@@ -67,7 +71,26 @@ func (a *App) runServer(ctx context.Context, addr, dbDir, jwtSecret string, deve
 		serverOpts = append(serverOpts, handlers.WithShutdown(triggerShutdown))
 		logger.Info("development mode: POST /admin/shutdown enabled")
 	}
-	apiServer := handlers.NewServer(store.New(pool), tokens, serverOpts...)
+	st := store.New(pool)
+	apiServer := handlers.NewServer(st, tokens, serverOpts...)
+
+	// Reap expired refresh tokens in the background so the table does not grow
+	// without bound (issue #5). It shares srvCtx, so graceful shutdown cancels
+	// it; the WaitGroup below makes the drain wait for an in-flight sweep to
+	// finish before the deferred pool close runs, so the reaper never touches a
+	// closed pool. It calls the store directly, bypassing the API. A zero
+	// interval disables it (runRefreshTokenReaper returns immediately).
+	if reapInterval > 0 {
+		logger.Info("refresh-token reaper enabled", "interval", reapInterval)
+	} else {
+		logger.Info("refresh-token reaper disabled", "reason", "session-reap-interval is 0")
+	}
+	var reaper sync.WaitGroup
+	reaper.Add(1)
+	go func() {
+		defer reaper.Done()
+		runRefreshTokenReaper(srvCtx, st, reapInterval, tokens.Now, logger)
+	}()
 
 	// Serve the raw spec alongside the generated API routes, then let
 	// oapi-codegen register the API operations (including /healthz and
@@ -103,12 +126,21 @@ func (a *App) runServer(ctx context.Context, addr, dbDir, jwtSecret string, deve
 	case <-srvCtx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
+		// srvCtx is already cancelled here, so the reaper is stopping; wait for
+		// it before returning so the deferred pool close does not race a sweep.
+		err := srv.Shutdown(shutdownCtx)
+		reaper.Wait()
+		if err != nil {
 			return fmt.Errorf("server shutdown failed: %w", err)
 		}
 		logger.Info("server stopped")
 		return nil
 	case err := <-errCh:
+		// The listener failed without a shutdown signal; cancel srvCtx to stop
+		// the reaper (the deferred triggerShutdown would too, but that runs
+		// after the pool close) and wait for it before returning.
+		triggerShutdown()
+		reaper.Wait()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("server error: %w", err)
 		}

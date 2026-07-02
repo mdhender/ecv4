@@ -56,6 +56,12 @@ func (ts *TokenService) AccessTTL() time.Duration { return ts.accessTTL }
 // RefreshTTL is the configured refresh-token lifetime.
 func (ts *TokenService) RefreshTTL() time.Duration { return ts.refreshTTL }
 
+// Now returns the service's current time from its (optionally injected) clock,
+// so callers that need "now" for token-adjacent work — pruning expired refresh
+// tokens, for instance — stay consistent with issuance and with WithClock in
+// tests.
+func (ts *TokenService) Now() time.Time { return ts.now() }
+
 // tokenClaims is the JWT payload for both token kinds. Username and Roles are
 // present only on access tokens; Family only on refresh tokens (the jti lives
 // in RegisteredClaims.ID).

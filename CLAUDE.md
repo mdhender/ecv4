@@ -101,8 +101,11 @@ against the `air` dev server on `:9987`. See `cmd/earl/README.md` for details.
 `ECV4_JWT_SECRET` (must be ≥32 bytes for HS256; required when `ECV4_ENV=production`
 — startup fails if unset there; in any other environment an unset secret yields a
 random ephemeral one that dies on restart),
-`ECV4_DEVELOPMENT`, and `ECV4_DEVELOPMENT_ADMIN_EMAIL` / `ECV4_DEVELOPMENT_ADMIN_SECRET`
-(used only by the `--development` admin seed).
+`ECV4_DEVELOPMENT`, `ECV4_DEVELOPMENT_ADMIN_EMAIL` / `ECV4_DEVELOPMENT_ADMIN_SECRET`
+(used only by the `--development` admin seed), and `ECV4_SESSION_REAP_INTERVAL`
+(how often the background reaper prunes expired refresh tokens while serving;
+default 15m, `0` disables it — the on-demand `POST /admin/refresh-tokens/purge`
+still works).
 
 ## Testing conventions
 
