@@ -102,15 +102,15 @@ account → `/me` → admin deactivates → deactivated account is locked out of
 
 ## Gaps & risks
 
-| # | Finding | Recommendation | Size |
-|---|---------|----------------|------|
-| 1 | **Out-of-scope game stubs returned empty 200** (`return nil, nil` → strict layer writes nothing). Not a panic/500 — a misleading success. | **FIXED** this pass: stubs return `errNotImplemented`, mapped to 501 with the standard envelope; malformed body → 400 envelope; other errors → 500 without leaking internal text (`internal/handlers/wiring.go`, `server.go`). | done (trivial) |
-| 2 | **Shutdown 404-masking leaks via 401** to unauthenticated probes (see above). The stated "invisible in prod" goal isn't met for no-token callers. | Either accept it (401 vs 404 is a weak signal) **or** mark the op `security: []` and do all auth inside the handler so the 404 check truly runs first, **or** don't register the route at all unless `--development`. Recommend documenting the current behavior; a real fix is small. | small |
-| 3 | **Prod does not require a fixed JWT secret.** `resolveJWTSecret` only *warns* and generates an ephemeral secret when `ECV4_JWT_SECRET` is unset — regardless of `ECV4_ENV` — so a prod restart silently invalidates all tokens. | Fail startup when the secret is unset and `ECV4_ENV=production`. `cmd/game-server/main.go:444`. | small |
-| 4 | **3c has no discoverable `reset-password` verb.** | Add a `database account reset-password` alias forwarding to `updateAccount`. | trivial |
-| 5 | **No automated CLI tests.** `cmd/game-server` has no `_test.go`; CLI flows validated only manually. | Add a smoke test that shells the built binary against a temp DB, or extract the exec bodies into a testable package. | medium |
-| 6 | **Refresh-token table has no cleanup** (accepted earlier). Rows accumulate; expired/revoked tokens are never pruned. | Note only; add a periodic prune later. | small (later) |
-| 7 | **Dev JWT secret is ephemeral by design** when unset — every restart invalidates tokens. Intended for `make run`/air. | No change; documented in code and here. | n/a |
+| # | Finding | Recommendation | Size | Issue |
+|---|---------|----------------|------|-------|
+| 1 | **Out-of-scope game stubs returned empty 200** (`return nil, nil` → strict layer writes nothing). Not a panic/500 — a misleading success. | **FIXED** this pass: stubs return `errNotImplemented`, mapped to 501 with the standard envelope; malformed body → 400 envelope; other errors → 500 without leaking internal text (`internal/handlers/wiring.go`, `server.go`). | done (trivial) | resolved |
+| 2 | **Shutdown 404-masking leaks via 401** to unauthenticated probes (see above). The stated "invisible in prod" goal isn't met for no-token callers. | Either accept it (401 vs 404 is a weak signal) **or** mark the op `security: []` and do all auth inside the handler so the 404 check truly runs first, **or** don't register the route at all unless `--development`. Recommend documenting the current behavior; a real fix is small. | small | [#1](https://github.com/mdhender/ecv4/issues/1) |
+| 3 | **Prod does not require a fixed JWT secret.** `resolveJWTSecret` only *warns* and generates an ephemeral secret when `ECV4_JWT_SECRET` is unset — regardless of `ECV4_ENV` — so a prod restart silently invalidates all tokens. | Fail startup when the secret is unset and `ECV4_ENV=production`. `cmd/game-server/main.go:444`. | small | [#2](https://github.com/mdhender/ecv4/issues/2) |
+| 4 | **3c has no discoverable `reset-password` verb.** | Add a `database account reset-password` alias forwarding to `updateAccount`. | trivial | [#3](https://github.com/mdhender/ecv4/issues/3) |
+| 5 | **No automated CLI tests.** `cmd/game-server` has no `_test.go`; CLI flows validated only manually. | Add a smoke test that shells the built binary against a temp DB, or extract the exec bodies into a testable package. | medium | [#4](https://github.com/mdhender/ecv4/issues/4) |
+| 6 | **Refresh-token table has no cleanup** (accepted earlier). Rows accumulate; expired/revoked tokens are never pruned. | Note only; add a periodic prune later. | small (later) | [#5](https://github.com/mdhender/ecv4/issues/5) |
+| 7 | **Dev JWT secret is ephemeral by design** when unset — every restart invalidates tokens. Intended for `make run`/air. | No change; documented in code and here. | n/a | works as intended |
 
 ## Commands run
 
