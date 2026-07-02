@@ -145,6 +145,18 @@ var migrations = []string{
 	DROP TABLE games;
 
 	ALTER TABLE games_new RENAME TO games;`,
+
+	// 0007 - flesh out games with the columns the API contract requires beyond
+	// the bare code: a display name, a lifecycle status, and an optional
+	// description. status is constrained to the GameStatus enum and defaults to
+	// 'draft', the state a freshly created game starts in. name defaults to the
+	// empty string only so the NOT NULL column can be added to any pre-existing
+	// dev rows; the service layer requires a non-empty name on create. These are
+	// plain ADD COLUMNs, so no table rebuild (and no foreign-key dance) is needed.
+	`ALTER TABLE games ADD COLUMN name TEXT NOT NULL DEFAULT '';
+	ALTER TABLE games ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'
+		CHECK (status IN ('draft', 'recruiting', 'active', 'paused', 'complete', 'archived'));
+	ALTER TABLE games ADD COLUMN description TEXT;`,
 }
 
 // migrationOptions carries per-migration options, index-aligned with

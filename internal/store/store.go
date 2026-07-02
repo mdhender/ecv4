@@ -458,6 +458,58 @@ func (s *Store) GamesForAccount(ctx context.Context, accountID int64) ([]GameMem
 	return memberships, nil
 }
 
+// Game is a row from the games table. Description is nil when the column is
+// NULL (no description set).
+type Game struct {
+	ID          int64
+	Code        string
+	Name        string
+	Status      string
+	Description *string
+	IsActive    bool
+}
+
+// CreateGame inserts a new game and returns it. code and name must already be
+// validated by the caller (the games.code CHECK is a backstop, not the primary
+// guard); a new game starts in the 'draft' status and active. description is
+// stored as NULL when nil. It returns ErrConflict if the code is already taken.
+//
+// ctx bounds acquiring the connection and running the insert.
+func (s *Store) CreateGame(ctx context.Context, code, name string, description *string) (Game, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Game{}, fmt.Errorf("create game: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	err = sqlitex.Execute(conn,
+		"INSERT INTO games(code, name, status, description, is_active) VALUES(?, ?, 'draft', ?, 1);",
+		&sqlitex.ExecOptions{Args: []any{code, name, nullableText(description)}})
+	if err != nil {
+		if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
+			return Game{}, fmt.Errorf("create game %q: %w", code, ErrConflict)
+		}
+		return Game{}, fmt.Errorf("create game %q: %w", code, err)
+	}
+	return Game{
+		ID:          conn.LastInsertRowID(),
+		Code:        code,
+		Name:        name,
+		Status:      "draft",
+		Description: description,
+		IsActive:    true,
+	}, nil
+}
+
+// nullableText maps an optional string to a SQL argument: nil binds as NULL, a
+// non-nil pointer binds its value.
+func nullableText(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
 // Credentials returns the account and its stored bcrypt password hash for the
 // given email, for verifying a login. It returns ErrNotFound if no account has
 // that email. The hash is returned only from this method; it never rides along

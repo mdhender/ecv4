@@ -495,6 +495,47 @@ func TestGamesForAccount(t *testing.T) {
 	}
 }
 
+func TestCreateGame(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+
+	desc := "The first playtest game."
+	game, err := st.CreateGame(ctx, "ALPHA", "Alpha Campaign", &desc)
+	if err != nil {
+		t.Fatalf("CreateGame: %v", err)
+	}
+	if game.ID == 0 {
+		t.Fatal("CreateGame returned a zero id")
+	}
+	// A new game starts in draft, active, with the given code/name/description.
+	want := store.Game{
+		ID:          game.ID,
+		Code:        "ALPHA",
+		Name:        "Alpha Campaign",
+		Status:      "draft",
+		Description: &desc,
+		IsActive:    true,
+	}
+	if game.Code != want.Code || game.Name != want.Name || game.Status != want.Status ||
+		game.Description == nil || *game.Description != desc || !game.IsActive {
+		t.Fatalf("CreateGame = %+v, want %+v", game, want)
+	}
+
+	// A nil description is stored as NULL and round-trips as nil.
+	noDesc, err := st.CreateGame(ctx, "BETA", "Beta", nil)
+	if err != nil {
+		t.Fatalf("CreateGame(nil desc): %v", err)
+	}
+	if noDesc.Description != nil {
+		t.Fatalf("Description = %v, want nil", *noDesc.Description)
+	}
+
+	// A duplicate code is a conflict, not a generic error.
+	if _, err := st.CreateGame(ctx, "ALPHA", "Another", nil); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate code: got %v, want ErrConflict", err)
+	}
+}
+
 func TestLookupsNotFound(t *testing.T) {
 	st := newStore(t)
 	ctx := context.Background()
