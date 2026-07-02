@@ -7,6 +7,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -275,13 +276,14 @@ func (s *Server) ShutdownServer(ctx context.Context, request api.ShutdownServerR
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	} else if authErr != nil {
-		if authErr.forbidden {
+		status, code, message := authErr.response()
+		if status == http.StatusForbidden {
 			return api.ShutdownServer403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: "forbidden", Message: authErr.message,
+				Code: code, Message: message,
 			}}, nil
 		}
 		return api.ShutdownServer401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: "unauthorized", Message: authErr.message,
+			Code: code, Message: message,
 		}}, nil
 	}
 
@@ -298,13 +300,14 @@ func (s *Server) PurgeRefreshTokens(ctx context.Context, request api.PurgeRefres
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	} else if authErr != nil {
-		if authErr.forbidden {
+		status, code, message := authErr.response()
+		if status == http.StatusForbidden {
 			return api.PurgeRefreshTokens403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: "forbidden", Message: authErr.message,
+				Code: code, Message: message,
 			}}, nil
 		}
 		return api.PurgeRefreshTokens401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: "unauthorized", Message: authErr.message,
+			Code: code, Message: message,
 		}}, nil
 	}
 
