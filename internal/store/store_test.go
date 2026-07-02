@@ -473,8 +473,8 @@ func TestGamesForAccount(t *testing.T) {
 		t.Fatalf("GamesForAccount: %v", err)
 	}
 	want := []store.GameMembership{
-		{GameID: 10, Slug: "alpha", IsActive: true, Handle: "Overlord", IsGM: true},
-		{GameID: 20, Slug: "beta", IsActive: false, Handle: "Rome", IsGM: false},
+		{GameID: 10, Code: "alpha", IsActive: true, Handle: "Overlord", IsGM: true},
+		{GameID: 20, Code: "beta", IsActive: false, Handle: "Rome", IsGM: false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d memberships, want %d: %+v", len(got), len(want), got)

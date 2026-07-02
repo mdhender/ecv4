@@ -64,8 +64,8 @@ func TestListMyGamesReturnsMemberships(t *testing.T) {
 		t.Fatalf("got %d games, want 2: %+v", len(ok.Games), ok.Games)
 	}
 	want := []api.MyGame{
-		{Id: 10, Slug: "alpha", IsActive: true, Handle: "Overlord", IsGm: true},
-		{Id: 20, Slug: "beta", IsActive: false, Handle: "Rome", IsGm: false},
+		{Id: 10, Code: "alpha", IsActive: true, Handle: "Overlord", IsGm: true},
+		{Id: 20, Code: "beta", IsActive: false, Handle: "Rome", IsGm: false},
 	}
 	for i := range want {
 		if ok.Games[i] != want[i] {

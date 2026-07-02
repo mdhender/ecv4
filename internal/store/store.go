@@ -406,11 +406,11 @@ func (s *Store) ListAccounts(ctx context.Context) ([]Account, error) {
 
 // GameMembership projects one row of the game_account_role bridge joined to its
 // game: a game the account participates in, together with the account's handle
-// and game-master status in that game. Slug is the game's code; IsActive is the
+// and game-master status in that game. Code is the game's code; IsActive is the
 // game's own active flag (not the membership's).
 type GameMembership struct {
 	GameID   int64
-	Slug     string
+	Code     string
 	IsActive bool
 	Handle   string
 	IsGM     bool
@@ -444,7 +444,7 @@ func (s *Store) GamesForAccount(ctx context.Context, accountID int64) ([]GameMem
 			ResultFunc: func(stmt *sqlite.Stmt) error {
 				memberships = append(memberships, GameMembership{
 					GameID:   stmt.ColumnInt64(0),
-					Slug:     stmt.ColumnText(1),
+					Code:     stmt.ColumnText(1),
 					IsActive: stmt.ColumnInt(2) != 0,
 					Handle:   stmt.ColumnText(3),
 					IsGM:     stmt.ColumnInt(4) != 0,

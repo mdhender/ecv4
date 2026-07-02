@@ -737,12 +737,12 @@ components:
       enum: [draft, recruiting, active, paused, complete, archived]
     Game:
       type: object
-      required: [id, slug, name, status]
+      required: [id, code, name, status]
       properties:
         id:
           type: integer
           format: int64
-        slug:
+        code:
           type: string
           pattern: '^[a-z0-9][a-z0-9-]*$'
         name:
@@ -753,9 +753,9 @@ components:
           type: string
     CreateGameRequest:
       type: object
-      required: [slug, name]
+      required: [code, name]
       properties:
-        slug:
+        code:
           type: string
           pattern: '^[a-z0-9][a-z0-9-]*$'
         name:
@@ -776,12 +776,12 @@ components:
       description: |
         A game the authenticated user participates in, projected together with
         the caller's membership in it (handle and game-master status).
-      required: [id, slug, isActive, handle, isGm]
+      required: [id, code, isActive, handle, isGm]
       properties:
         id:
           type: integer
           format: int64
-        slug:
+        code:
           type: string
           description: The game's stable code.
           example: alpha

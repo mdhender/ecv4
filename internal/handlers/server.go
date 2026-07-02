@@ -352,7 +352,7 @@ func (s *Server) ListMyGames(ctx context.Context, request api.ListMyGamesRequest
 	for i, m := range memberships {
 		games[i] = api.MyGame{
 			Id:       m.GameID,
-			Slug:     m.Slug,
+			Code:     m.Code,
 			IsActive: m.IsActive,
 			Handle:   m.Handle,
 			IsGm:     m.IsGM,
