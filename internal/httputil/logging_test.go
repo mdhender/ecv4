@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/mdhender/ecv4/internal/api"
 )
 
 // capturingHandler is a slog.Handler that keeps every record it receives so a
@@ -130,15 +132,15 @@ func TestWriteErrorCarriesRequestID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	var body ErrorResponse
+	var body api.ErrorResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode error body: %v", err)
 	}
-	if body.RequestID == "" {
+	if body.RequestId == nil || *body.RequestId == "" {
 		t.Error("error body requestId is empty")
 	}
-	if body.RequestID != rec.Header().Get(RequestIDHeader) {
-		t.Errorf("body requestId %q does not match header %q", body.RequestID, rec.Header().Get(RequestIDHeader))
+	if body.RequestId == nil || *body.RequestId != rec.Header().Get(RequestIDHeader) {
+		t.Errorf("body requestId %v does not match header %q", body.RequestId, rec.Header().Get(RequestIDHeader))
 	}
 }
 
