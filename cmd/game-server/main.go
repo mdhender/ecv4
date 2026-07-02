@@ -53,6 +53,10 @@ func main() {
 	// (notably POST /admin/shutdown); with `database create` it seeds a known
 	// admin. Declared once here so the two uses cannot collide.
 	development := rootFlags.BoolLong("development", "enable development mode: the POST /admin/shutdown endpoint when serving, and the known-admin seed with 'database create' (env ECV4_DEVELOPMENT)")
+	// Opt-in, off by default: serve the interactive OpenAPI docs at /docs. It is
+	// deliberately independent of --development so docs can be exposed (or not)
+	// on any deployment without also enabling the development-only shutdown route.
+	allowDocs := rootFlags.BoolLong("allow-openapi-docs", "serve the interactive OpenAPI docs (Swagger UI) at /docs (env ECV4_ALLOW_OPENAPI_DOCS)")
 	rootCmd := &ff.Command{
 		Name:      "game-server",
 		Usage:     "game-server [FLAGS] <SUBCOMMAND>",
@@ -61,7 +65,7 @@ func main() {
 		// With no subcommand, run the server. This keeps `make run`
 		// (go run ./cmd/game-server) serving the skeleton as before.
 		Exec: func(ctx context.Context, _ []string) error {
-			return runServer(ctx, *addr, *dbDir, *jwtSecret, *development)
+			return runServer(ctx, *addr, *dbDir, *jwtSecret, *development, *allowDocs)
 		},
 	}
 
@@ -224,7 +228,7 @@ func main() {
 // until ctx is cancelled (SIGINT/SIGTERM) or the listener fails. The database
 // pool is opened before the listener and closed only after the server has
 // drained, so in-flight requests keep a usable pool through shutdown.
-func runServer(ctx context.Context, addr, dbDir, jwtSecret string, development bool) error {
+func runServer(ctx context.Context, addr, dbDir, jwtSecret string, development, allowDocs bool) error {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	secret, err := resolveJWTSecret(jwtSecret, logger)
@@ -277,6 +281,17 @@ func runServer(ctx context.Context, addr, dbDir, jwtSecret string, development b
 	// /version) on the same mux.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /openapi.yaml", httputil.OpenAPIHandler("api/openapi.yaml"))
+	// Interactive OpenAPI docs, off unless the operator opts in. Like
+	// /openapi.yaml these are meta routes registered on the mux directly, not
+	// part of the API contract. The subtree pattern serves the page and its
+	// embedded assets; /docs (no slash) redirects to it.
+	if allowDocs {
+		mux.Handle("GET /docs/", httputil.DocsHandler("/docs/"))
+		mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/docs/", http.StatusMovedPermanently)
+		})
+		logger.Info("OpenAPI docs enabled", "url", "/docs")
+	}
 	apiHandler := handlers.NewHTTPHandler(apiServer, mux, tokens)
 
 	srv := &http.Server{
