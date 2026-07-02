@@ -446,6 +446,135 @@ func TestPurgeExpiredRefreshTokens(t *testing.T) {
 	}
 }
 
+func TestSessionsForAccount(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	me, err := st.CreateAccount(ctx, "me@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount me: %v", err)
+	}
+	other, err := st.CreateAccount(ctx, "other@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount other: %v", err)
+	}
+
+	// fam-live: a rotated family — the old token is revoked, the newer one (bigger
+	// issued_at/expires_at) is live. Only the current token's times should surface.
+	if err := st.CreateRefreshToken(ctx, "live-old", "fam-live", me, 10, 500); err != nil {
+		t.Fatalf("create live-old: %v", err)
+	}
+	if err := st.RevokeRefreshToken(ctx, "live-old"); err != nil {
+		t.Fatalf("revoke live-old: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "live-new", "fam-live", me, 20, 600); err != nil {
+		t.Fatalf("create live-new: %v", err)
+	}
+	// fam-newer: a second live session, issued later, so it sorts ahead of fam-live.
+	if err := st.CreateRefreshToken(ctx, "newer", "fam-newer", me, 30, 700); err != nil {
+		t.Fatalf("create newer: %v", err)
+	}
+	// fam-revoked: fully revoked — no live token, so it is not a session.
+	if err := st.CreateRefreshToken(ctx, "revoked", "fam-revoked", me, 5, 900); err != nil {
+		t.Fatalf("create revoked: %v", err)
+	}
+	if err := st.RevokeFamily(ctx, "fam-revoked"); err != nil {
+		t.Fatalf("revoke fam-revoked: %v", err)
+	}
+	// fam-expired: un-revoked but expired at the query time, so not a session.
+	if err := st.CreateRefreshToken(ctx, "expired", "fam-expired", me, 1, 100); err != nil {
+		t.Fatalf("create expired: %v", err)
+	}
+	// A bystander's live session must not leak into me's list.
+	if err := st.CreateRefreshToken(ctx, "bystander", "fam-bystander", other, 15, 800); err != nil {
+		t.Fatalf("create bystander: %v", err)
+	}
+
+	// now = 200: fam-expired (expires_at 100) is gone; fam-live and fam-newer remain.
+	sessions, err := st.SessionsForAccount(ctx, me, 200)
+	if err != nil {
+		t.Fatalf("SessionsForAccount: %v", err)
+	}
+	want := []store.Session{
+		{FamilyID: "fam-newer", IssuedAt: 30, ExpiresAt: 700},
+		{FamilyID: "fam-live", IssuedAt: 20, ExpiresAt: 600},
+	}
+	if len(sessions) != len(want) {
+		t.Fatalf("got %d sessions, want %d: %+v", len(sessions), len(want), sessions)
+	}
+	for i := range want {
+		if sessions[i] != want[i] {
+			t.Fatalf("session %d = %+v, want %+v", i, sessions[i], want[i])
+		}
+	}
+}
+
+func TestSessionsForAccountEmpty(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	acct, err := st.CreateAccount(ctx, "loner@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	sessions, err := st.SessionsForAccount(ctx, acct, 0)
+	if err != nil {
+		t.Fatalf("SessionsForAccount: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("got %d sessions, want 0", len(sessions))
+	}
+}
+
+func TestRevokeFamilyForAccount(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	me, err := st.CreateAccount(ctx, "me@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount me: %v", err)
+	}
+	other, err := st.CreateAccount(ctx, "other@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount other: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "mine-a", "fam-mine", me, 1, 900); err != nil {
+		t.Fatalf("create mine-a: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "mine-b", "fam-mine", me, 2, 900); err != nil {
+		t.Fatalf("create mine-b: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "theirs", "fam-theirs", other, 1, 900); err != nil {
+		t.Fatalf("create theirs: %v", err)
+	}
+
+	// Revoking the caller's own family marks every token in it revoked.
+	if err := st.RevokeFamilyForAccount(ctx, "fam-mine", me); err != nil {
+		t.Fatalf("RevokeFamilyForAccount own: %v", err)
+	}
+	for _, jti := range []string{"mine-a", "mine-b"} {
+		if got, _ := st.RefreshTokenByJTI(ctx, jti); !got.Revoked {
+			t.Fatalf("%q should be revoked", jti)
+		}
+	}
+
+	// Idempotent: revoking it again still succeeds while the rows persist.
+	if err := st.RevokeFamilyForAccount(ctx, "fam-mine", me); err != nil {
+		t.Fatalf("RevokeFamilyForAccount idempotent: %v", err)
+	}
+
+	// Another account's family is not the caller's to revoke: ErrNotFound, and the
+	// bystander's token is left untouched.
+	if err := st.RevokeFamilyForAccount(ctx, "fam-theirs", me); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revoke other's family: got %v, want ErrNotFound", err)
+	}
+	if got, _ := st.RefreshTokenByJTI(ctx, "theirs"); got.Revoked {
+		t.Fatal("bystander's token should not be revoked")
+	}
+
+	// An unknown family is also ErrNotFound.
+	if err := st.RevokeFamilyForAccount(ctx, "fam-nope", me); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revoke unknown family: got %v, want ErrNotFound", err)
+	}
+}
+
 func TestGamesForAccount(t *testing.T) {
 	st, pool := newStorePool(t)
 	ctx := context.Background()
