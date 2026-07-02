@@ -77,6 +77,26 @@ var migrations = []string{
 		UNIQUE (game_id, account_id),
 		UNIQUE (game_id, handle)
 	) STRICT;`,
+
+	// 0005 - refresh_tokens: persisted refresh-token state so that logout and
+	// theft/reuse detection mean something. Each row is one issued refresh
+	// token, identified by its JWT id (jti). Tokens issued from a single login
+	// share a family_id; rotating a token keeps the family and mints a new jti,
+	// so presenting an already-revoked token lets us revoke the whole family.
+	// revoked is a soft flag (rows are never deleted here); the JWT signature
+	// remains the real secret, so rotating ECV4_JWT_SECRET still invalidates
+	// every outstanding token at once, independent of this table.
+	`CREATE TABLE refresh_tokens (
+		id         INTEGER PRIMARY KEY,
+		jti        TEXT    NOT NULL UNIQUE,
+		family_id  TEXT    NOT NULL,
+		account_id INTEGER NOT NULL REFERENCES accounts(id),
+		issued_at  INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		revoked    INTEGER NOT NULL CHECK (revoked IN (0, 1))
+	) STRICT;
+	CREATE INDEX refresh_tokens_family_id  ON refresh_tokens(family_id);
+	CREATE INDEX refresh_tokens_account_id ON refresh_tokens(account_id);`,
 }
 
 // schema returns the migration schema applied to every database.

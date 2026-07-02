@@ -172,6 +172,122 @@ func (s *Store) UpdateAccountByID(ctx context.Context, id int64, upd AccountUpda
 	return nil
 }
 
+// RefreshToken is a row from the refresh_tokens table: a single issued refresh
+// token, enough to look it up by its jti and decide whether it is still usable.
+type RefreshToken struct {
+	JTI       string
+	FamilyID  string
+	AccountID int64
+	IssuedAt  int64
+	ExpiresAt int64
+	Revoked   bool
+}
+
+// CreateRefreshToken persists a newly issued refresh token as un-revoked. jti
+// must be unique (it is the JWT id); familyID groups tokens rotated from one
+// login. issuedAt and expiresAt are unix seconds. It returns ErrConflict if the
+// jti already exists.
+//
+// ctx bounds acquiring the connection and running the insert.
+func (s *Store) CreateRefreshToken(ctx context.Context, jti, familyID string, accountID, issuedAt, expiresAt int64) error {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("create refresh token: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	err = sqlitex.Execute(conn,
+		"INSERT INTO refresh_tokens(jti, family_id, account_id, issued_at, expires_at, revoked) VALUES(?, ?, ?, ?, ?, 0);",
+		&sqlitex.ExecOptions{Args: []any{jti, familyID, accountID, issuedAt, expiresAt}})
+	if err != nil {
+		if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique {
+			return fmt.Errorf("create refresh token %q: %w", jti, ErrConflict)
+		}
+		return fmt.Errorf("create refresh token %q: %w", jti, err)
+	}
+	return nil
+}
+
+// RefreshTokenByJTI returns the refresh token with the given jti. It returns
+// ErrNotFound if no such token exists. A returned token may be revoked or
+// expired; callers decide whether that is acceptable.
+//
+// ctx bounds acquiring the connection and running the query.
+func (s *Store) RefreshTokenByJTI(ctx context.Context, jti string) (RefreshToken, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return RefreshToken{}, fmt.Errorf("refresh token by jti: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	token := RefreshToken{JTI: jti}
+	found := false
+	err = sqlitex.Execute(conn,
+		"SELECT family_id, account_id, issued_at, expires_at, revoked FROM refresh_tokens WHERE jti = ?;",
+		&sqlitex.ExecOptions{
+			Args: []any{jti},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				found = true
+				token.FamilyID = stmt.ColumnText(0)
+				token.AccountID = stmt.ColumnInt64(1)
+				token.IssuedAt = stmt.ColumnInt64(2)
+				token.ExpiresAt = stmt.ColumnInt64(3)
+				token.Revoked = stmt.ColumnInt(4) != 0
+				return nil
+			},
+		})
+	if err != nil {
+		return RefreshToken{}, fmt.Errorf("refresh token by jti %q: %w", jti, err)
+	}
+	if !found {
+		return RefreshToken{}, ErrNotFound
+	}
+	return token, nil
+}
+
+// RevokeRefreshToken marks the token with the given jti revoked. It is
+// idempotent: revoking an already-revoked or unknown jti is not an error, since
+// revocation only ever needs to leave the token unusable.
+//
+// ctx bounds acquiring the connection and running the update.
+func (s *Store) RevokeRefreshToken(ctx context.Context, jti string) error {
+	return s.revoke(ctx, "jti = ?", jti, "revoke refresh token")
+}
+
+// RevokeFamily marks every token in familyID revoked, used for theft/reuse
+// detection: presenting an already-rotated token kills the whole session
+// family. It is idempotent.
+//
+// ctx bounds acquiring the connection and running the update.
+func (s *Store) RevokeFamily(ctx context.Context, familyID string) error {
+	return s.revoke(ctx, "family_id = ?", familyID, "revoke refresh family")
+}
+
+// RevokeAllForAccount marks every refresh token for accountID revoked, used for
+// logout-everywhere. It is idempotent.
+//
+// ctx bounds acquiring the connection and running the update.
+func (s *Store) RevokeAllForAccount(ctx context.Context, accountID int64) error {
+	return s.revoke(ctx, "account_id = ?", accountID, "revoke account refresh tokens")
+}
+
+// revoke sets revoked = 1 on every refresh_tokens row matching whereCol against
+// arg. It is the shared body of the three Revoke* methods; op labels errors.
+func (s *Store) revoke(ctx context.Context, whereCol string, arg any, op string) error {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	defer s.pool.Put(conn)
+
+	if err := sqlitex.Execute(conn,
+		"UPDATE refresh_tokens SET revoked = 1 WHERE "+whereCol+";",
+		&sqlitex.ExecOptions{Args: []any{arg}}); err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return nil
+}
+
 // SchemaVersion returns the database schema version: the number of migrations
 // applied to the open database, tracked by SQLite's user_version pragma and
 // maintained by sqlitemigration.

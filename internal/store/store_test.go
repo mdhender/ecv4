@@ -249,6 +249,129 @@ func TestListAccounts(t *testing.T) {
 	}
 }
 
+func TestRefreshTokenCreateLookupRevoke(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	acct, err := st.CreateAccount(ctx, "rt@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	if err := st.CreateRefreshToken(ctx, "jti-1", "fam-1", acct, 100, 200); err != nil {
+		t.Fatalf("CreateRefreshToken: %v", err)
+	}
+
+	got, err := st.RefreshTokenByJTI(ctx, "jti-1")
+	if err != nil {
+		t.Fatalf("RefreshTokenByJTI: %v", err)
+	}
+	if got.FamilyID != "fam-1" || got.AccountID != acct || got.IssuedAt != 100 || got.ExpiresAt != 200 || got.Revoked {
+		t.Fatalf("unexpected token: %+v", got)
+	}
+
+	if err := st.RevokeRefreshToken(ctx, "jti-1"); err != nil {
+		t.Fatalf("RevokeRefreshToken: %v", err)
+	}
+	if got, _ := st.RefreshTokenByJTI(ctx, "jti-1"); !got.Revoked {
+		t.Fatalf("token should be revoked after RevokeRefreshToken: %+v", got)
+	}
+
+	// Revoking an unknown jti is a no-op, not an error (idempotent).
+	if err := st.RevokeRefreshToken(ctx, "does-not-exist"); err != nil {
+		t.Fatalf("RevokeRefreshToken unknown: %v", err)
+	}
+}
+
+func TestRefreshTokenByJTINotFound(t *testing.T) {
+	st := newStore(t)
+	if _, err := st.RefreshTokenByJTI(context.Background(), "nope"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestRefreshTokenDuplicateJTI(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	acct, err := st.CreateAccount(ctx, "dupjti@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "jti-dup", "fam", acct, 1, 2); err != nil {
+		t.Fatalf("first CreateRefreshToken: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "jti-dup", "fam", acct, 1, 2); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("second CreateRefreshToken: got %v, want ErrConflict", err)
+	}
+}
+
+func TestRevokeFamily(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	acct, err := st.CreateAccount(ctx, "fam@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	// Two tokens in one family and one in another; RevokeFamily hits only the
+	// first family.
+	if err := st.CreateRefreshToken(ctx, "a", "fam-1", acct, 1, 2); err != nil {
+		t.Fatalf("create a: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "b", "fam-1", acct, 1, 2); err != nil {
+		t.Fatalf("create b: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "c", "fam-2", acct, 1, 2); err != nil {
+		t.Fatalf("create c: %v", err)
+	}
+
+	if err := st.RevokeFamily(ctx, "fam-1"); err != nil {
+		t.Fatalf("RevokeFamily: %v", err)
+	}
+	for _, jti := range []string{"a", "b"} {
+		if got, _ := st.RefreshTokenByJTI(ctx, jti); !got.Revoked {
+			t.Fatalf("%q should be revoked", jti)
+		}
+	}
+	if got, _ := st.RefreshTokenByJTI(ctx, "c"); got.Revoked {
+		t.Fatal("c (other family) should not be revoked")
+	}
+}
+
+func TestRevokeAllForAccount(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	one, err := st.CreateAccount(ctx, "one@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount one: %v", err)
+	}
+	two, err := st.CreateAccount(ctx, "two@example.com", false, true, "h")
+	if err != nil {
+		t.Fatalf("CreateAccount two: %v", err)
+	}
+
+	if err := st.CreateRefreshToken(ctx, "one-a", "fam-a", one, 1, 2); err != nil {
+		t.Fatalf("create one-a: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "one-b", "fam-b", one, 1, 2); err != nil {
+		t.Fatalf("create one-b: %v", err)
+	}
+	if err := st.CreateRefreshToken(ctx, "two-a", "fam-c", two, 1, 2); err != nil {
+		t.Fatalf("create two-a: %v", err)
+	}
+
+	if err := st.RevokeAllForAccount(ctx, one); err != nil {
+		t.Fatalf("RevokeAllForAccount: %v", err)
+	}
+	for _, jti := range []string{"one-a", "one-b"} {
+		if got, _ := st.RefreshTokenByJTI(ctx, jti); !got.Revoked {
+			t.Fatalf("%q should be revoked", jti)
+		}
+	}
+	if got, _ := st.RefreshTokenByJTI(ctx, "two-a"); got.Revoked {
+		t.Fatal("two-a (other account) should not be revoked")
+	}
+}
+
 func TestLookupsNotFound(t *testing.T) {
 	st := newStore(t)
 	ctx := context.Background()
