@@ -33,7 +33,9 @@ internal/handlers/       Adapts HTTP/API DTOs to services; implements the strict
 internal/auth/           JWT issue/verify + bearer middleware
 internal/store/          Typed data-access layer over the SQLite pool
 internal/database/       Database create/open + append-only migrations
-cmd/game-server/         Server entry point and CLI
+internal/cli/            game-server command tree (serve + database/account verbs)
+cmd/game-server/         Thin process shell over internal/cli
+cmd/earl/                curl-like smoke-testing client for a running server
 docs/                    curl examples, MVP status, background notes
 ```
 
@@ -65,14 +67,16 @@ tree. With no subcommand it runs the server. Subcommands:
 ```bash
 game-server version                          # print the version
 game-server database create <PATH>           # create ecv4.db in an existing dir (or :memory: to verify migrations)
-game-server database account create --email <e> [--is-admin] [--secret <s>]
+game-server database account create --email <e> [--is-admin] [--is-inactive] [--secret <s>]
 game-server database account update --email <e> [--is-active[=false]] [--is-admin[=false]] [--secret <s> | --generate-secret]
 game-server database account reset-password --email <e> [--secret <s> | --generate-secret]   # generates one if omitted
 game-server database account list            # print all accounts (id, active, admin, email); read-only, no server needed
 ```
 
 The shared `--development` flag enables the `POST /admin/shutdown` route when
-serving and seeds a known admin when used with `database create`.
+serving and seeds a known admin when used with `database create`. The separate
+`--allow-openapi-docs` flag serves the embedded Swagger UI at `/docs` when
+serving.
 
 ## Configuration
 
@@ -81,9 +85,10 @@ load before flags are parsed, selected by `ECV4_ENV` (default `development`). Ke
 variables:
 
 - `ECV4_DB_DIR` — directory holding `ecv4.db`
-- `ECV4_JWT_SECRET` — HMAC signing key, **must be ≥32 bytes** for HS256. If unset, a
-  random ephemeral secret is generated and all tokens are invalidated on restart —
-  set a stable value in production.
+- `ECV4_JWT_SECRET` — HMAC signing key, **must be ≥32 bytes** for HS256. Required
+  when `ECV4_ENV=production` — startup fails if it is unset there. In any other
+  environment an unset secret yields a random ephemeral one that invalidates all
+  tokens on restart.
 - `ECV4_DEVELOPMENT`, `ECV4_DEVELOPMENT_ADMIN_EMAIL`, `ECV4_DEVELOPMENT_ADMIN_SECRET`
   — control development mode and the optional seeded admin.
 

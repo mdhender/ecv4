@@ -39,16 +39,21 @@ Every API change follows this order (do not skip or reorder):
 
 ## Architecture / layering
 
-Request flow: `cmd/game-server` builds the mux → `handlers.NewHTTPHandler` wraps
-the strict server with oapi-codegen's router + the `requireBearer` middleware →
-handlers call the store → store runs SQL against the pool from `internal/database`.
+Request flow: `cmd/game-server` is a thin shell that calls `internal/cli`, which
+builds the command tree and (when serving) the mux → `handlers.NewHTTPHandler`
+wraps the strict server with oapi-codegen's router + the `requireBearer`
+middleware → handlers call the store → store runs SQL against the pool from
+`internal/database`.
 
 - **`internal/api`** — generated only. Transport DTOs; never use as domain/DB types.
 - **`internal/handlers`** — implements the generated `StrictServerInterface`. Thin adapters: auth/account handlers are real; the game handlers (`ListGames`, `GetTurn`, `SubmitOrders`, …) are deliberate stubs returning `errNotImplemented`, which `NewHTTPHandler`'s strict `ResponseErrorHandlerFunc` maps to **501** (not an empty 200). Malformed bodies → 400; other errors → 500 with the message hidden.
 - **`internal/store`** — typed query methods over a `sqlitemigration.Pool`. The only place SQL lives outside migrations. Returns `ErrNotFound` / `ErrConflict`; the hashed secret never leaves this layer.
 - **`internal/database`** — owns creation + migration. `Create` is the **only** function allowed to bring a DB file into existence; everything else uses `Open`, which refuses to create and runs pending migrations on every open (this is the upgrade path). `CreateMemory` / `CreateSharedMemory` back tests. Foreign keys are a per-connection PRAGMA set via `PrepareConn` on every pooled connection.
 - **`internal/auth`** — `TokenService` issues/verifies HS256 JWTs. Access tokens (15m) carry identity+roles; refresh tokens (24h) carry a distinct audience + a family id, are persisted, rotated on `/auth/refresh`, and revoked on `/auth/logout`. **Presenting an already-rotated refresh token revokes the whole family** (theft signal). Use `WithClock` to inject time in tests.
-- **`internal/httputil`** — request logging, health, the raw-spec handler, and the shared JSON error envelope (`{code, message, requestId?}`).
+- **`internal/httputil`** — request logging, request-id tagging, the raw-spec handler (`GET /openapi.yaml`), the opt-in embedded Swagger UI (`DocsHandler`, served at `/docs` only with `--allow-openapi-docs`), and the shared JSON error envelope (`{code, message, requestId?}`). Health is *not* here — it is the `GetHealth` strict handler in `handlers/server.go`.
+- **`internal/cli`** — the `game-server` command tree (`ff/v4`) and its business logic: `runServer` (mux + graceful shutdown + reaper), account verbs, and the development-admin seed. `cmd/game-server` only loads dotenv and calls `cli.App.Run`.
+- **`internal/cerrs`** — `Error`, a string type for declaring package-level sentinel errors as constants.
+- **`internal/phrases`** — an xkcd-936-style passphrase generator, used to mint printable secrets for the account CLI verbs.
 
 ## Auth model (spec-driven)
 
@@ -70,14 +75,18 @@ tracks how many have run. `application_id` is fixed at `0x65637634` ("ecv4") and
 opening a file with a mismatched id is rejected. Tables are `STRICT`; accounts and
 games are never deleted (toggle `is_active`).
 
-## CLI (`cmd/game-server`, built on `peterbourgon/ff/v4`)
+## CLI (`internal/cli`, built on `peterbourgon/ff/v4`)
 
+The command tree lives in `internal/cli`; `cmd/game-server` is a thin shell.
 Root command with no subcommand runs the server. Subcommands:
 `version`, `database create <PATH>` (PATH is an existing dir, or `:memory:` to just
-verify migrations), `database account create`, `database account update`.
-The shared `--development` flag enables the `POST /admin/shutdown` route when
-serving and seeds a known admin with `database create`. Config comes from flags
-or `ECV4_`-prefixed env vars.
+verify migrations), and the `database account` verbs: `create`, `update`,
+`reset-password` (a password-only alias for `update`), and `list` (read-only, no
+running server needed). The shared `--development` flag enables the
+`POST /admin/shutdown` route when serving and seeds a known admin with
+`database create`. The separate `--allow-openapi-docs` flag (independent of
+`--development`) serves the embedded Swagger UI at `/docs`. Config comes from
+flags or `ECV4_`-prefixed env vars.
 
 ## Smoke-testing client (`cmd/earl`)
 
@@ -102,7 +111,8 @@ against the `air` dev server on `:9987`. See `cmd/earl/README.md` for details.
 — startup fails if unset there; in any other environment an unset secret yields a
 random ephemeral one that dies on restart),
 `ECV4_DEVELOPMENT`, `ECV4_DEVELOPMENT_ADMIN_EMAIL` / `ECV4_DEVELOPMENT_ADMIN_SECRET`
-(used only by the `--development` admin seed), and `ECV4_SESSION_REAP_INTERVAL`
+(used only by the `--development` admin seed), `ECV4_ALLOW_OPENAPI_DOCS`
+(serves the Swagger UI at `/docs`), and `ECV4_SESSION_REAP_INTERVAL`
 (how often the background reaper prunes expired refresh tokens while serving;
 default 15m, `0` disables it — the on-demand `POST /admin/refresh-tokens/purge`
 still works).
