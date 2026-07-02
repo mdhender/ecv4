@@ -570,6 +570,131 @@ func nullableText(s *string) any {
 	return *s
 }
 
+// scanGame reads a Game from the current row of stmt, whose selected columns must
+// be, in order: id, code, name, status, description, is_active. A NULL description
+// maps to a nil pointer.
+func scanGame(stmt *sqlite.Stmt) Game {
+	game := Game{
+		ID:       stmt.ColumnInt64(0),
+		Code:     stmt.ColumnText(1),
+		Name:     stmt.ColumnText(2),
+		Status:   stmt.ColumnText(3),
+		IsActive: stmt.ColumnInt(5) != 0,
+	}
+	if stmt.ColumnType(4) != sqlite.TypeNull {
+		desc := stmt.ColumnText(4)
+		game.Description = &desc
+	}
+	return game
+}
+
+// ListGames returns the games visible to a caller under the game-management
+// visibility rules, ordered by game id. A non-admin caller sees every game they
+// were ever assigned to — an active OR dropped membership, unlike GamesForAccount,
+// which requires an active membership — excluding games whose own is_active flag
+// is 0 (an admin hard-hide). An admin caller sees every game, including hidden
+// ones. When status is non-nil the result is further restricted to games in that
+// lifecycle status. No visible games yields an empty slice, not an error.
+//
+// ctx bounds acquiring the connection and running the query; a cancelled ctx
+// interrupts the read.
+func (s *Store) ListGames(ctx context.Context, accountID int64, isAdmin bool, status *string) ([]Game, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list games: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	var query strings.Builder
+	var args []any
+	if isAdmin {
+		// Admin sees every game, including hard-hidden (is_active = 0) ones.
+		query.WriteString(
+			`SELECT g.id, g.code, g.name, g.status, g.description, g.is_active
+				FROM games g
+				WHERE 1 = 1`)
+	} else {
+		// The join to any membership row (active or dropped) restricts to games the
+		// account was ever assigned to; UNIQUE(game_id, account_id) means at most one
+		// such row per game, so no de-duplication is needed. g.is_active = 1 hides
+		// admin-hidden games from non-admins.
+		query.WriteString(
+			`SELECT g.id, g.code, g.name, g.status, g.description, g.is_active
+				FROM games g
+				JOIN game_account_role r ON r.game_id = g.id
+				WHERE r.account_id = ? AND g.is_active = 1`)
+		args = append(args, accountID)
+	}
+	if status != nil {
+		query.WriteString(" AND g.status = ?")
+		args = append(args, *status)
+	}
+	query.WriteString(" ORDER BY g.id;")
+
+	games := []Game{}
+	err = sqlitex.Execute(conn, query.String(), &sqlitex.ExecOptions{
+		Args: args,
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			games = append(games, scanGame(stmt))
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list games: %w", err)
+	}
+	return games, nil
+}
+
+// GameByID returns the game with the given id if it is visible to the caller,
+// applying the same visibility rules as ListGames to a single game. An admin sees
+// any game. A non-admin sees a game only if they were ever assigned to it (active
+// or dropped membership) and the game's own is_active flag is 1. A game that does
+// not exist, or exists but is not visible to the caller, is reported as
+// ErrNotFound, so the two are indistinguishable to a non-admin.
+//
+// ctx bounds acquiring the connection and running the query; a cancelled ctx
+// interrupts the read.
+func (s *Store) GameByID(ctx context.Context, id, accountID int64, isAdmin bool) (Game, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Game{}, fmt.Errorf("game by id: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	var query string
+	var args []any
+	if isAdmin {
+		query = `SELECT g.id, g.code, g.name, g.status, g.description, g.is_active
+			FROM games g
+			WHERE g.id = ?;`
+		args = []any{id}
+	} else {
+		query = `SELECT g.id, g.code, g.name, g.status, g.description, g.is_active
+			FROM games g
+			JOIN game_account_role r ON r.game_id = g.id
+			WHERE g.id = ? AND r.account_id = ? AND g.is_active = 1;`
+		args = []any{id, accountID}
+	}
+
+	var game Game
+	found := false
+	err = sqlitex.Execute(conn, query, &sqlitex.ExecOptions{
+		Args: args,
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			found = true
+			game = scanGame(stmt)
+			return nil
+		},
+	})
+	if err != nil {
+		return Game{}, fmt.Errorf("game by id %d: %w", id, err)
+	}
+	if !found {
+		return Game{}, ErrNotFound
+	}
+	return game, nil
+}
+
 // Credentials returns the account and its stored bcrypt password hash for the
 // given email, for verifying a login. It returns ErrNotFound if no account has
 // that email. The hash is returned only from this method; it never rides along
