@@ -18,14 +18,14 @@ const (
 
 // Load uses the `joho/godotenv` package to load environment files in the working directory.
 //
-// Load the following files depending on ECV4_ENV, with the first file having the highest precedence,
+// Load the following files depending on `env`, with the first file having the highest precedence,
 // and .env having the lowest precedence:
 //
-// Priority  Filename______________   .gitignore?  Secrets?  Notes_______________________________
-// Highest   .env.{{ECV4_ENV}}.local  Yes          Yes       Environment-specific local overrides
-// 2nd       .env.local               Yes          Yes       Local overrides
-// 3rd       .env.{{ECV4_ENV}}        No           Never     Shared environment-specific variables
-// Lowest    .env                     No           Never     Shared for all environments
+// Priority  Filename__________   .gitignore?  Secrets?  Notes_______________________________
+// Highest   .env.{{env}}.local   Yes          Yes       Environment-specific local overrides
+// 2nd       .env.local           Yes          Yes       Local overrides
+// 3rd       .env.{{env}}         No           Never     Shared environment-specific variables
+// Lowest    .env                 No           Never     Shared for all environments
 //
 // WARNING: we are incompatible with bkeepers/dotenv since we load `.env.local` in test.
 // Read https://github.com/bkeepers/dotenv/issues/418 for the history of this decision.
@@ -38,9 +38,9 @@ func Load(env string) error {
 	}
 
 	for _, path := range []string{
-		".env." + env + ".local", // highest priority: .env.{{ECV4_ENV}}.local
+		".env." + env + ".local", // highest priority: .env.{{env}}.local
 		".env.local",             // 2nd     priority: .env.local
-		".env." + env,            // 3rd     priority: .env.{{ECV4_ENV}}
+		".env." + env,            // 3rd     priority: .env.{{env}}
 		".env",                   // lowest  priority: .env
 	} {
 		// verify path exists and is a regular file

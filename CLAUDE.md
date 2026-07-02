@@ -79,6 +79,21 @@ The shared `--development` flag enables the `POST /admin/shutdown` route when
 serving and seeds a known admin with `database create`. Config comes from flags
 or `ECV4_`-prefixed env vars.
 
+## Smoke-testing client (`cmd/earl`)
+
+`earl` is a curl-like CLI for hitting a *running* server by hand — use it to
+dogfood endpoints, not as a substitute for `go test`. `go run ./cmd/earl <method>
+<path> [body]` (`get`/`post`/`put`/`patch`/`delete`) joins `path` to `--base-url`
+and prints the status line + pretty body. It attaches the bearer token from the
+`--authn` JSON file automatically; on a `401` (for a token-bearing, non-`/auth/*`
+request) it refreshes via `/auth/refresh`, or logs in fresh with
+`--authn-email`/`--authn-secret`, rewrites the authn file, and retries once. With
+no authn file it sends unauthenticated (so `earl post /auth/login <creds>` works
+to bootstrap a session). A `body` arg auto-detects: `-` is stdin, an existing file
+is read, anything else is a literal. Config is flags or `EARL_`-prefixed env vars,
+already set in `.env.development.local`, so `go run ./cmd/earl get /me` just works
+against the `air` dev server on `:9987`. See `cmd/earl/README.md` for details.
+
 ## Environment / config
 
 `.env` files load before flags are parsed, selected by `ECV4_ENV` (default

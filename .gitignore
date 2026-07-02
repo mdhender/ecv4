@@ -9,6 +9,7 @@ next-prompt*.md
 # Local build products
 /bin/
 /dist/
+/earl
 /game-server
 *.out
 *.test
