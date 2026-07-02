@@ -20,14 +20,33 @@ import (
 var _ api.StrictServerInterface = (*Server)(nil)
 
 // Server carries the dependencies the handlers need: the store for persistence
-// and the token service for issuing and verifying JWTs.
+// and the token service for issuing and verifying JWTs. shutdown, when non-nil,
+// enables the development-only POST /admin/shutdown route and triggers the
+// server's graceful shutdown; it is nil (route disabled) unless WithShutdown is
+// passed.
 type Server struct {
-	store  *store.Store
-	tokens *auth.TokenService
+	store    *store.Store
+	tokens   *auth.TokenService
+	shutdown func()
 }
 
-func NewServer(st *store.Store, tokens *auth.TokenService) *Server {
-	return &Server{store: st, tokens: tokens}
+// Option customizes a Server.
+type Option func(*Server)
+
+// WithShutdown enables the development-only POST /admin/shutdown route and wires
+// it to trigger, which starts the server's graceful shutdown. Without it the
+// route responds 404, as if it did not exist — so it is gated to callers that
+// deliberately started the server in development mode.
+func WithShutdown(trigger func()) Option {
+	return func(s *Server) { s.shutdown = trigger }
+}
+
+func NewServer(st *store.Store, tokens *auth.TokenService, opts ...Option) *Server {
+	s := &Server{store: st, tokens: tokens}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *Server) GetHealth(ctx context.Context, request api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
@@ -206,6 +225,38 @@ func (s *Server) Logout(ctx context.Context, request api.LogoutRequestObject) (a
 	}
 
 	return api.Logout204Response{}, nil
+}
+
+func (s *Server) ShutdownServer(ctx context.Context, request api.ShutdownServerRequestObject) (api.ShutdownServerResponseObject, error) {
+	// Gated to development: without a wired trigger the route behaves as if it
+	// does not exist. Checked before auth so the capability is invisible (404,
+	// not 403) in any deployment that did not opt in with --development.
+	if s.shutdown == nil {
+		return api.ShutdownServer404JSONResponse{NotFoundJSONResponse: api.NotFoundJSONResponse{
+			Code: "not_found", Message: "not found",
+		}}, nil
+	}
+
+	// Admin only, re-reading fresh account state like the other admin routes.
+	if _, authErr, err := s.requireAdmin(ctx); err != nil {
+		return nil, err
+	} else if authErr != nil {
+		if authErr.forbidden {
+			return api.ShutdownServer403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
+				Code: "forbidden", Message: authErr.message,
+			}}, nil
+		}
+		return api.ShutdownServer401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+			Code: "unauthorized", Message: authErr.message,
+		}}, nil
+	}
+
+	// Trigger the graceful shutdown, then return 202. The trigger only starts
+	// the drain (it cancels the server's run context); the server's Shutdown
+	// call waits for in-flight requests — including this one — to finish, so the
+	// 202 is written and delivered before the process exits.
+	s.shutdown()
+	return api.ShutdownServer202Response{}, nil
 }
 
 func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api.GetMeResponseObject, error) {

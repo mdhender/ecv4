@@ -48,6 +48,11 @@ func main() {
 	addr := rootFlags.StringLong("addr", config.DefaultAddr, "HTTP listen address")
 	dbDir := rootFlags.StringLong("db-dir", ".", "directory holding the "+database.FileName+" database (env ECV4_DB_DIR)")
 	jwtSecret := rootFlags.StringLong("jwt-secret", "", "HMAC secret (>=32 bytes) for signing JWTs (env ECV4_JWT_SECRET); if empty, a random ephemeral secret is generated")
+	// One development switch, shared by every command (ff inherits root flags
+	// into subcommands): when serving it enables development-only endpoints
+	// (notably POST /admin/shutdown); with `database create` it seeds a known
+	// admin. Declared once here so the two uses cannot collide.
+	development := rootFlags.BoolLong("development", "enable development mode: the POST /admin/shutdown endpoint when serving, and the known-admin seed with 'database create' (env ECV4_DEVELOPMENT)")
 	rootCmd := &ff.Command{
 		Name:      "game-server",
 		Usage:     "game-server [FLAGS] <SUBCOMMAND>",
@@ -56,7 +61,7 @@ func main() {
 		// With no subcommand, run the server. This keeps `make run`
 		// (go run ./cmd/game-server) serving the skeleton as before.
 		Exec: func(ctx context.Context, _ []string) error {
-			return runServer(ctx, *addr, *dbDir, *jwtSecret)
+			return runServer(ctx, *addr, *dbDir, *jwtSecret, *development)
 		},
 	}
 
@@ -81,7 +86,6 @@ func main() {
 	}
 
 	databaseCreateFlags := ff.NewFlagSet("create").SetParent(databaseFlags)
-	createDevelopment := databaseCreateFlags.BoolLong("development", "in development, seed a known admin account from ECV4_DEVELOPMENT_ADMIN_EMAIL/ECV4_DEVELOPMENT_ADMIN_SECRET")
 	databaseCreateCmd := &ff.Command{
 		Name:      "create",
 		Usage:     "game-server database create [--development] <PATH>",
@@ -111,7 +115,7 @@ func main() {
 			} else {
 				fmt.Printf("created %s\n", filepath.Join(path, database.FileName))
 			}
-			if *createDevelopment {
+			if *development {
 				if err := seedDevelopmentAdmin(ctx, env, path); err != nil {
 					return err
 				}
@@ -220,15 +224,15 @@ func main() {
 // until ctx is cancelled (SIGINT/SIGTERM) or the listener fails. The database
 // pool is opened before the listener and closed only after the server has
 // drained, so in-flight requests keep a usable pool through shutdown.
-func runServer(ctx context.Context, addr, dbDir, jwtSecret string) error {
+func runServer(ctx context.Context, addr, dbDir, jwtSecret string, development bool) error {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	secret, err := resolveJWTSecret(jwtSecret, logger)
 	if err != nil {
 		return err
 	}
-	// 15-minute access tokens, 24-hour refresh tokens. The refresh flow
-	// (/auth/refresh, /auth/logout) is not implemented yet.
+	// 15-minute access tokens, 24-hour refresh tokens, rotated and revoked
+	// through /auth/refresh and /auth/logout.
 	tokens := auth.NewTokenService(secret, 15*time.Minute, 24*time.Hour)
 
 	// Open (and migrate) the database before binding the listener; a bad
@@ -249,10 +253,24 @@ func runServer(ctx context.Context, addr, dbDir, jwtSecret string) error {
 	}()
 	logger.Info("database ready", "path", dbPath)
 
+	// srvCtx cancels either on the signal that cancels ctx (SIGINT/SIGTERM) or
+	// when the development shutdown route triggers it, so both drive the same
+	// graceful-drain path below. The deferred cancel prevents a context leak on
+	// the listener-error return.
+	srvCtx, triggerShutdown := context.WithCancel(ctx)
+	defer triggerShutdown()
+
 	// The store wraps the pool with typed query methods; the generated API
 	// handlers reach the database only through it. The token service both
 	// issues tokens (for /auth/login) and verifies them (for secured routes).
-	apiServer := handlers.NewServer(store.New(pool), tokens)
+	// In development, wire the admin shutdown route to triggerShutdown; without
+	// --development the route is not enabled and responds 404.
+	var serverOpts []handlers.Option
+	if development {
+		serverOpts = append(serverOpts, handlers.WithShutdown(triggerShutdown))
+		logger.Info("development mode: POST /admin/shutdown enabled")
+	}
+	apiServer := handlers.NewServer(store.New(pool), tokens, serverOpts...)
 
 	// Serve the raw spec alongside the generated API routes, then let
 	// oapi-codegen register the API operations (including /healthz and
@@ -274,7 +292,7 @@ func runServer(ctx context.Context, addr, dbDir, jwtSecret string) error {
 	}()
 
 	select {
-	case <-ctx.Done():
+	case <-srvCtx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {

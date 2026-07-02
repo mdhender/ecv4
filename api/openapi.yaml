@@ -26,6 +26,8 @@ tags:
     description: Order validation, submission, and status
   - name: Accounts
     description: Account administration (admin only)
+  - name: Admin
+    description: Administrative server operations (admin only)
 security:
   - bearerAuth: []
 paths:
@@ -226,6 +228,26 @@ paths:
                 $ref: '#/components/schemas/AccountResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/shutdown:
+    post:
+      tags: [Admin]
+      operationId: shutdownServer
+      summary: Gracefully shut down the server (development only)
+      description: |
+        Development only. Triggers a graceful shutdown: the server stops
+        accepting new connections and drains in-flight requests (including this
+        one) before the process exits. Enabled only when the server was started
+        with --development; otherwise it responds 404 as if the route did not
+        exist. Admin only.
+      responses:
+        '202':
+          description: Shutdown initiated; the server will drain and stop
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
