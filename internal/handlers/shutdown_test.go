@@ -95,3 +95,44 @@ func TestShutdownDisabledIs404(t *testing.T) {
 		t.Fatal("disabled shutdown must never fire")
 	}
 }
+
+// TestShutdownDisabledIsInvisible checks that a disabled route does not leak its
+// existence to unauthenticated or wrong-method probes: every such probe must get
+// the exact same response the mux gives a genuinely unknown path. Previously an
+// unauthenticated probe got 401 (and a GET got 405), both of which revealed the
+// route exists (issue #1).
+func TestShutdownDisabledIsInvisible(t *testing.T) {
+	handler, fired := newShutdownHandler(t, false)
+
+	// The baseline: a path that was never registered.
+	unknown := doJSON(t, handler, http.MethodPost, "/admin/nope", "", nil)
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown path: got %d, want 404", unknown.Code)
+	}
+
+	cases := []struct {
+		name   string
+		method string
+		token  string
+	}{
+		{"no token", http.MethodPost, ""},
+		{"admin token", http.MethodPost, adminAccess(t)},
+		{"player token", http.MethodPost, playerAccess(t)},
+		{"wrong method, no token", http.MethodGet, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := doJSON(t, handler, tc.method, "/admin/shutdown", tc.token, nil)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("disabled shutdown %s: got %d, want 404 (body %q)", tc.name, rr.Code, rr.Body.String())
+			}
+			// Byte-identical to an unknown path, so the route is truly invisible.
+			if rr.Body.String() != unknown.Body.String() {
+				t.Fatalf("disabled shutdown %s: body %q differs from unknown-path body %q", tc.name, rr.Body.String(), unknown.Body.String())
+			}
+		})
+	}
+	if *fired {
+		t.Fatal("disabled shutdown must never fire")
+	}
+}
