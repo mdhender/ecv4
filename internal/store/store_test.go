@@ -457,9 +457,9 @@ func TestGamesForAccount(t *testing.T) {
 
 	// alpha (active) and beta (inactive/archived). The caller is a GM in alpha
 	// and a player in beta; the archived game must still appear.
-	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(10, 'alpha', 1);")
-	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(20, 'beta', 0);")
-	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(30, 'gamma', 1);")
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(10, 'ALPHA', 1);")
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(20, 'BETA', 0);")
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(30, 'GAMMA', 1);")
 
 	exec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(10, 1, 'Overlord', 1, 1);")
 	exec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(20, 1, 'Rome', 0, 1);")
@@ -473,8 +473,8 @@ func TestGamesForAccount(t *testing.T) {
 		t.Fatalf("GamesForAccount: %v", err)
 	}
 	want := []store.GameMembership{
-		{GameID: 10, Code: "alpha", IsActive: true, Handle: "Overlord", IsGM: true},
-		{GameID: 20, Code: "beta", IsActive: false, Handle: "Rome", IsGM: false},
+		{GameID: 10, Code: "ALPHA", IsActive: true, Handle: "Overlord", IsGM: true},
+		{GameID: 20, Code: "BETA", IsActive: false, Handle: "Rome", IsGM: false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d memberships, want %d: %+v", len(got), len(want), got)

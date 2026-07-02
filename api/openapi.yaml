@@ -744,7 +744,7 @@ components:
           format: int64
         code:
           type: string
-          pattern: '^[a-z0-9][a-z0-9-]*$'
+          pattern: '^[A-Z][A-Z]+$'
         name:
           type: string
         status:
@@ -757,7 +757,7 @@ components:
       properties:
         code:
           type: string
-          pattern: '^[a-z0-9][a-z0-9-]*$'
+          pattern: '^[A-Z][A-Z]+$'
         name:
           type: string
           minLength: 1
@@ -784,7 +784,7 @@ components:
         code:
           type: string
           description: The game's stable code.
-          example: alpha
+          example: ALPHA
         isActive:
           type: boolean
           description: Whether the game itself is active.

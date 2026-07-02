@@ -46,12 +46,12 @@ func TestListMyGamesReturnsMemberships(t *testing.T) {
 	insertAccount(t, pool, 1, "me@example.com", false, true)
 	insertAccount(t, pool, 2, "other@example.com", false, true)
 
-	seedExec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(10, 'alpha', 1);")
-	seedExec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(20, 'beta', 0);")
+	seedExec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(10, 'ALPHA', 1);")
+	seedExec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(20, 'BETA', 0);")
 	seedExec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(10, 1, 'Overlord', 1, 1);")
 	seedExec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(20, 1, 'Rome', 0, 1);")
 	// A dropped membership and a bystander's membership must not appear.
-	seedExec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(30, 'gamma', 1);")
+	seedExec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(30, 'GAMMA', 1);")
 	seedExec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(30, 1, 'Carthage', 0, 0);")
 	seedExec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(10, 2, 'Egypt', 0, 1);")
 
@@ -64,8 +64,8 @@ func TestListMyGamesReturnsMemberships(t *testing.T) {
 		t.Fatalf("got %d games, want 2: %+v", len(ok.Games), ok.Games)
 	}
 	want := []api.MyGame{
-		{Id: 10, Code: "alpha", IsActive: true, Handle: "Overlord", IsGm: true},
-		{Id: 20, Code: "beta", IsActive: false, Handle: "Rome", IsGm: false},
+		{Id: 10, Code: "ALPHA", IsActive: true, Handle: "Overlord", IsGm: true},
+		{Id: 20, Code: "BETA", IsActive: false, Handle: "Rome", IsGm: false},
 	}
 	for i := range want {
 		if ok.Games[i] != want[i] {

@@ -182,14 +182,107 @@ func TestGameCodeConstraint(t *testing.T) {
 	}
 	defer conn.Close()
 
-	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('alpha-1', 1);`)
-	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('a.b_c-2', 1);`)
+	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('ALPHA', 1);`)
+	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('AB', 1);`)
 
-	wantErr(t, conn, "code unique", `INSERT INTO games(code, is_active) VALUES('alpha-1', 1);`)
-	wantErr(t, conn, "code too short", `INSERT INTO games(code, is_active) VALUES('a', 1);`)
-	wantErr(t, conn, "code leading digit", `INSERT INTO games(code, is_active) VALUES('1alpha', 1);`)
-	wantErr(t, conn, "code uppercase", `INSERT INTO games(code, is_active) VALUES('Alpha', 1);`)
-	wantErr(t, conn, "code bad char", `INSERT INTO games(code, is_active) VALUES('al pha', 1);`)
+	wantErr(t, conn, "code unique", `INSERT INTO games(code, is_active) VALUES('ALPHA', 1);`)
+	wantErr(t, conn, "code too short", `INSERT INTO games(code, is_active) VALUES('A', 1);`)
+	wantErr(t, conn, "code lowercase", `INSERT INTO games(code, is_active) VALUES('alpha', 1);`)
+	wantErr(t, conn, "code leading digit", `INSERT INTO games(code, is_active) VALUES('1ALPHA', 1);`)
+	wantErr(t, conn, "code digit", `INSERT INTO games(code, is_active) VALUES('ALPHA1', 1);`)
+	wantErr(t, conn, "code hyphen", `INSERT INTO games(code, is_active) VALUES('ALPHA-1', 1);`)
+	wantErr(t, conn, "code bad char", `INSERT INTO games(code, is_active) VALUES('AL PHA', 1);`)
+}
+
+// TestGamesCodeUppercaseMigration exercises migration 0006, which rebuilds the
+// games table under the strict [A-Z][A-Z]+ code rule. Rows whose code is
+// lowercase letters survive with their code upper-cased; rows whose code carries
+// digits or punctuation cannot satisfy the new CHECK even upper-cased and are
+// thrown away, and the game_account_role rows that referenced them go with them
+// so no dangling foreign key remains.
+func TestGamesCodeUppercaseMigration(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, FileName)
+
+	// Stand up a database at the schema version just before 0006, where the old
+	// games CHECK still accepts lowercase codes with digits and punctuation.
+	older := sqlitemigration.NewPool(dbPath, sqlitemigration.Schema{
+		AppID:      appID,
+		Migrations: migrations[:5],
+	}, sqlitemigration.Options{
+		Flags:       sqlite.OpenReadWrite | sqlite.OpenCreate | sqlite.OpenWAL | sqlite.OpenURI,
+		PrepareConn: enableForeignKeys,
+	})
+	conn, err := older.Get(ctx)
+	if err != nil {
+		t.Fatalf("seed older db: %v", err)
+	}
+	mustExec(t, conn, `INSERT INTO accounts(id, email, is_admin, is_active, hashed_secret)
+		VALUES(1, 'p@example.com', 0, 1, 'h');`)
+	// alpha and beta are pure lowercase letters: they survive, upper-cased.
+	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(1, 'alpha', 1);`)
+	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(2, 'beta', 1);`)
+	// alpha-1 carries a hyphen and digit: even upper-cased it fails the new CHECK,
+	// so it is dropped along with its membership row.
+	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(3, 'alpha-1', 1);`)
+	mustExec(t, conn, `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(1, 1, 'Rome', 1, 1);`)
+	mustExec(t, conn, `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(3, 1, 'Egypt', 0, 1);`)
+	older.Put(conn)
+	if err := older.Close(); err != nil {
+		t.Fatalf("close older db: %v", err)
+	}
+
+	// Open runs migration 0006, rebuilding the games table.
+	pool, closeDB, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer closeDB()
+	conn, err = pool.Get(ctx)
+	if err != nil {
+		t.Fatalf("get conn: %v", err)
+	}
+	defer pool.Put(conn)
+
+	// Survivors are upper-cased; the punctuation code is gone.
+	var codes []string
+	if err := sqlitex.Execute(conn, `SELECT code FROM games ORDER BY id;`, &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			codes = append(codes, stmt.ColumnText(0))
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("select codes: %v", err)
+	}
+	if want := []string{"ALPHA", "BETA"}; len(codes) != len(want) || codes[0] != want[0] || codes[1] != want[1] {
+		t.Fatalf("codes = %v, want %v", codes, want)
+	}
+
+	// The membership for the dropped game is gone; the survivor's remains.
+	var roleGameIDs []int
+	if err := sqlitex.Execute(conn, `SELECT game_id FROM game_account_role ORDER BY game_id;`, &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			roleGameIDs = append(roleGameIDs, stmt.ColumnInt(0))
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("select roles: %v", err)
+	}
+	if len(roleGameIDs) != 1 || roleGameIDs[0] != 1 {
+		t.Fatalf("role game_ids = %v, want [1]", roleGameIDs)
+	}
+
+	// The new CHECK is in force: a lowercase code is rejected, and a foreign key
+	// into the rebuilt games table still resolves.
+	wantErr(t, conn, "lowercase rejected after rebuild", `INSERT INTO games(code, is_active) VALUES('gamma', 1);`)
+	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(4, 'GAMMA', 1);`)
+	mustExec(t, conn, `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(4, 1, 'Carthage', 0, 1);`)
+	wantErr(t, conn, "fk into rebuilt games", `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
+		VALUES(99, 1, 'Nowhere', 0, 1);`)
 }
 
 func TestGameAccountRoleConstraints(t *testing.T) {
@@ -199,7 +292,7 @@ func TestGameAccountRoleConstraints(t *testing.T) {
 	}
 	defer conn.Close()
 
-	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(1, 'alpha', 1);`)
+	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(1, 'ALPHA', 1);`)
 	mustExec(t, conn, `INSERT INTO accounts(id, email, is_admin, is_active, hashed_secret)
 		VALUES(10, 'p1@example.com', 0, 1, 'h'), (11, 'p2@example.com', 0, 1, 'h');`)
 
@@ -224,7 +317,7 @@ func TestGameAccountRoleConstraints(t *testing.T) {
 		VALUES(99, 12, 'player_2', 0, 1);`)
 
 	// The same handle is free to reuse in a different game.
-	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(2, 'beta', 1);`)
+	mustExec(t, conn, `INSERT INTO games(id, code, is_active) VALUES(2, 'BETA', 1);`)
 	mustExec(t, conn, `INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active)
 		VALUES(2, 10, 'player_1', 0, 1);`)
 }
@@ -324,7 +417,7 @@ func TestOpenMigratesOlderInstanceForward(t *testing.T) {
 	defer pool.Put(conn)
 
 	// The games table from a later migration now exists.
-	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('alpha', 1);`)
+	mustExec(t, conn, `INSERT INTO games(code, is_active) VALUES('ALPHA', 1);`)
 }
 
 func TestOpenCloseIsIdempotent(t *testing.T) {
