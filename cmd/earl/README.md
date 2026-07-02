@@ -127,9 +127,14 @@ A typical `.env.development.local`:
 ```
 EARL_BASE_URL=http://localhost:9987/
 EARL_AUTHN=data/alpha/authn.json
-EARL_AUTHN_EMAIL=penny@example.com
-EARL_AUTHN_SECRET=big.happy.fall.pumpkins
+EARL_AUTHN_EMAIL=admin@example.com
+EARL_AUTHN_SECRET=your-dev-admin-secret
 ```
+
+These must match the development admin seeded into the database (see
+`ECV4_DEVELOPMENT_ADMIN_EMAIL` / `ECV4_DEVELOPMENT_ADMIN_SECRET`). Use a
+throwaway secret — `.env.development.local` is git-ignored, but never commit a
+real credential to a tracked file.
 
 With that in place, no flags are needed:
 
