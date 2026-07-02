@@ -512,6 +512,62 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /games/{gameId}/members/{accountId}:
+    parameters:
+      - $ref: '#/components/parameters/GameId'
+      - $ref: '#/components/parameters/AccountId'
+    patch:
+      tags: [Games]
+      operationId: updateGameMember
+      summary: Update a game member
+      description: |
+        Applies a partial update to an existing membership. Each field carries its
+        own rule from the action matrix:
+          - isActive: only true (reactivate a dropped member). Admin or an active
+            GM, any status except archived. Reactivation resumes the existing row.
+          - isGm: only true (promote a player to GM). Admin or an active GM,
+            recruiting only (an admin bypasses that window). Demotion is not
+            supported.
+          - handle: the member themselves may rename in recruiting only, and the
+            new handle may not begin with 'player_'; an admin may rename in any
+            non-archived status. A duplicate handle is a 409.
+        An archived game is frozen: no update is accepted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMemberRequest'
+            examples:
+              reactivate:
+                summary: Reactivate a dropped member
+                value:
+                  isActive: true
+              promote:
+                summary: Promote a player to GM
+                value:
+                  isGm: true
+              rename:
+                summary: Player renames their own handle
+                value:
+                  handle: Carthage
+      responses:
+        '200':
+          description: The updated member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /games/{gameId}/turns:
     parameters:
       - $ref: '#/components/parameters/GameId'
@@ -1027,6 +1083,28 @@ components:
           type: boolean
           default: false
           description: Assign the member as a game master rather than a player.
+    UpdateMemberRequest:
+      type: object
+      description: |
+        Partial update to a game membership; any subset of fields may be set and an
+        omitted field is left unchanged. isActive may only be set to true
+        (reactivate a dropped member); isGm may only be set to true (promote a
+        player to GM) — demotion and deactivation are not supported here. A handle
+        edited by the member themselves may not begin with 'player_'.
+      properties:
+        isActive:
+          type: boolean
+          description: Set true to reactivate a dropped member.
+        isGm:
+          type: boolean
+          description: Set true to promote a player to game master.
+        handle:
+          type: string
+          pattern: '^[A-Za-z][A-Za-z0-9._-]+$'
+          description: |
+            A new handle, unique within the game. Two or more characters, starting
+            with a letter, using only letters, digits, '.', '_' or '-'.
+          example: Carthage
     Session:
       type: object
       description: |
