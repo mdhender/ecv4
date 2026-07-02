@@ -369,6 +369,88 @@ func myGamesUnauthorized(message string) api.ListMyGames401JSONResponse {
 	}}
 }
 
+// ChangeMyPassword lets an authenticated account replace its own password. The
+// caller proves ownership with the current password (verified against the stored
+// hash, as in Login) before the new one is applied; on success every session for
+// the account is revoked so a stolen refresh token cannot outlive the password it
+// was minted under.
+func (s *Server) ChangeMyPassword(ctx context.Context, request api.ChangeMyPasswordRequestObject) (api.ChangeMyPasswordResponseObject, error) {
+	// Secured route: the bearer-auth middleware puts verified claims in the
+	// context; their absence means the request reached here unauthenticated.
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return changePasswordUnauthorized("missing credentials"), nil
+	}
+	if request.Body == nil {
+		return changePasswordBadRequest("missing request body"), nil
+	}
+
+	// Re-read fresh account state rather than trusting the token, like the other
+	// /me handlers: an account may have been deactivated or removed since the
+	// token was issued, and such an account may not change its password.
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return changePasswordUnauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return changePasswordUnauthorized("account is not active"), nil
+	}
+
+	// Verify the current password against the stored hash before applying the
+	// change. Credentials is the only method that exposes the hash.
+	_, hashedSecret, err := s.store.Credentials(ctx, account.Email)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return changePasswordUnauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hashedSecret), []byte(request.Body.CurrentPassword)) != nil {
+		return changePasswordUnauthorized("current password is incorrect"), nil
+	}
+
+	// Hash the new password, enforcing the shared secret-length policy. A too-short
+	// secret is a client error (400), not a server fault.
+	newHash, err := auth.HashSecret(request.Body.NewPassword)
+	switch {
+	case errors.Is(err, auth.ErrSecretTooShort):
+		return changePasswordBadRequest("new password is too short"), nil
+	case err != nil:
+		return nil, err
+	}
+
+	if err := s.store.UpdateAccountByID(ctx, account.ID, store.AccountUpdate{HashedSecret: &newHash}); err != nil {
+		return nil, err
+	}
+
+	// Revoke every refresh session for the account so a session created under the
+	// old password cannot be rotated forward. The caller's own access token stays
+	// valid until it expires; they re-authenticate to obtain a fresh session.
+	if err := s.store.RevokeAllForAccount(ctx, account.ID); err != nil {
+		return nil, err
+	}
+
+	return api.ChangeMyPassword204Response{}, nil
+}
+
+// changePasswordUnauthorized builds the 401 response for ChangeMyPassword.
+func changePasswordUnauthorized(message string) api.ChangeMyPassword401JSONResponse {
+	return api.ChangeMyPassword401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code:    "unauthorized",
+		Message: message,
+	}}
+}
+
+// changePasswordBadRequest builds the 400 response for ChangeMyPassword.
+func changePasswordBadRequest(message string) api.ChangeMyPassword400JSONResponse {
+	return api.ChangeMyPassword400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse{
+		Code:    "bad_request",
+		Message: message,
+	}}
+}
+
 // accountRoles maps an account to its global roles. The accounts table carries
 // only the admin flag; game-scoped GM/player roles live in game_account_role
 // and surface on game endpoints, not in the global user context.
