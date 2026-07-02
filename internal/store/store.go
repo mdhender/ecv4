@@ -570,6 +570,116 @@ func (s *Store) CreateGame(ctx context.Context, code, name string, description *
 	}, nil
 }
 
+// GameUpdate describes a partial update to a game. A nil field is left unchanged;
+// a non-nil field is written. The store applies exactly what it is given — the
+// lifecycle/status and role rules are enforced by the handler before calling.
+type GameUpdate struct {
+	Status      *string
+	Name        *string
+	Description *string
+	IsActive    *bool
+}
+
+// empty reports whether the update requests no changes.
+func (u GameUpdate) empty() bool {
+	return u.Status == nil && u.Name == nil && u.Description == nil && u.IsActive == nil
+}
+
+// buildGameUpdate turns upd into the SET-clause fragments and their arguments for
+// a games UPDATE. Only the fields set in upd are included.
+func buildGameUpdate(upd GameUpdate) (sets []string, args []any) {
+	if upd.Status != nil {
+		sets = append(sets, "status = ?")
+		args = append(args, *upd.Status)
+	}
+	if upd.Name != nil {
+		sets = append(sets, "name = ?")
+		args = append(args, *upd.Name)
+	}
+	if upd.Description != nil {
+		sets = append(sets, "description = ?")
+		args = append(args, *upd.Description)
+	}
+	if upd.IsActive != nil {
+		sets = append(sets, "is_active = ?")
+		args = append(args, boolToInt(*upd.IsActive))
+	}
+	return sets, args
+}
+
+// UpdateGame applies upd to the game and returns the updated Game. The current-row
+// read and update run in one transaction. It returns ErrNotFound if no game has
+// the id and an error if upd requests no changes. It enforces no lifecycle or role
+// rules; the handler authorizes the change first.
+//
+// ctx bounds the whole operation.
+func (s *Store) UpdateGame(ctx context.Context, id int64, upd GameUpdate) (game Game, err error) {
+	if upd.empty() {
+		return Game{}, fmt.Errorf("update game %d: no changes requested", id)
+	}
+
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Game{}, fmt.Errorf("update game: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	endTx, err := sqlitex.ImmediateTransaction(conn)
+	if err != nil {
+		return Game{}, fmt.Errorf("update game: %w", err)
+	}
+	defer endTx(&err)
+
+	current := Game{ID: id}
+	found := false
+	if e := sqlitex.Execute(conn,
+		"SELECT code, name, status, description, is_active FROM games WHERE id = ?;",
+		&sqlitex.ExecOptions{
+			Args: []any{id},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				found = true
+				current.Code = stmt.ColumnText(0)
+				current.Name = stmt.ColumnText(1)
+				current.Status = stmt.ColumnText(2)
+				if stmt.ColumnType(3) != sqlite.TypeNull {
+					desc := stmt.ColumnText(3)
+					current.Description = &desc
+				}
+				current.IsActive = stmt.ColumnInt(4) != 0
+				return nil
+			},
+		}); e != nil {
+		return Game{}, fmt.Errorf("update game %d: %w", id, e)
+	}
+	if !found {
+		return Game{}, ErrNotFound
+	}
+
+	sets, args := buildGameUpdate(upd)
+	args = append(args, id)
+	if e := sqlitex.Execute(conn,
+		"UPDATE games SET "+strings.Join(sets, ", ")+" WHERE id = ?;",
+		&sqlitex.ExecOptions{Args: args}); e != nil {
+		return Game{}, fmt.Errorf("update game %d: %w", id, e)
+	}
+
+	// Merge the applied fields onto the current row for the returned Game.
+	if upd.Status != nil {
+		current.Status = *upd.Status
+	}
+	if upd.Name != nil {
+		current.Name = *upd.Name
+	}
+	if upd.Description != nil {
+		desc := *upd.Description
+		current.Description = &desc
+	}
+	if upd.IsActive != nil {
+		current.IsActive = *upd.IsActive
+	}
+	return current, nil
+}
+
 // nullableText maps an optional string to a SQL argument: nil binds as NULL, a
 // non-nil pointer binds its value.
 func nullableText(s *string) any {

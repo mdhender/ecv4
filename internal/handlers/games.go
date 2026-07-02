@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -58,6 +59,208 @@ func (s *Server) CreateGame(ctx context.Context, request api.CreateGameRequestOb
 	}
 
 	return api.CreateGame201JSONResponse(apiGame(game)), nil
+}
+
+// statusOrder is the linear lifecycle chain. A status's index gives the
+// forward/backward direction of a transition: draft(0) → recruiting(1) →
+// active(2) → paused(3) → complete(4) → archived(5).
+var statusOrder = []api.GameStatus{
+	api.Draft, api.Recruiting, api.Active, api.Paused, api.Complete, api.Archived,
+}
+
+// statusIndex returns the position of s in statusOrder, or -1 if s is not a known
+// status.
+func statusIndex(s api.GameStatus) int {
+	for i, v := range statusOrder {
+		if v == s {
+			return i
+		}
+	}
+	return -1
+}
+
+// UpdateGame applies a partial update to a game: a status transition, a
+// name/description edit, or the admin is_active hard-hide. Each field carries its
+// own rule from the action matrix, enforced per-field and only for fields that
+// represent an actual change:
+//   - status advances forward (skips allowed) for an active GM or admin; backward
+//     is a 409 except paused→active (un-pause) and out-of-archived, both admin-only.
+//   - name/description require an active GM or admin.
+//   - isActive (hard-hide) is admin-only and orthogonal to status.
+//
+// An archived game is frozen: the only accepted change is an admin moving its
+// status to another state (the locked archived-freeze exception).
+func (s *Server) UpdateGame(ctx context.Context, request api.UpdateGameRequestObject) (api.UpdateGameResponseObject, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return updateGameUnauthorized("missing credentials"), nil
+	}
+
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return updateGameUnauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return updateGameUnauthorized("account is not active"), nil
+	}
+
+	if request.Body == nil {
+		return updateGameBadRequest("request body is required"), nil
+	}
+	body := request.Body
+	if body.Status == nil && body.Name == nil && body.Description == nil && body.IsActive == nil {
+		return updateGameBadRequest("no changes requested"), nil
+	}
+
+	// Visibility gate, shared with GetGame: unknown or not-visible game → 404. A
+	// non-admin can only reach a game they were assigned to that is not hidden, so
+	// only an admin can ever act on an admin-hidden game.
+	game, err := s.store.GameByID(ctx, request.GameId, account.ID, account.IsAdmin)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return updateGameNotFound("game not found"), nil
+	case err != nil:
+		return nil, err
+	}
+
+	// An admin bypasses the GM requirement; a non-admin's role comes from their own
+	// membership, which GameByID guarantees exists.
+	activeGM := account.IsAdmin
+	if !account.IsAdmin {
+		caller, err := s.store.MemberForGame(ctx, request.GameId, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		activeGM = caller.IsActive && caller.IsGM
+	}
+
+	current := api.GameStatus(game.Status)
+
+	// Archived freeze: everything but a status change is frozen (admins included).
+	// The status change itself (out of archived, admin-only) is handled below.
+	if current == api.Archived && (body.Name != nil || body.Description != nil || body.IsActive != nil) {
+		return updateGameForbidden("an archived game is frozen; only an admin may change its status"), nil
+	}
+
+	var upd store.GameUpdate
+
+	// status
+	if body.Status != nil {
+		target := *body.Status
+		if !target.Valid() {
+			return updateGameBadRequest("unknown status"), nil
+		}
+		if target != current { // an actual transition
+			ci, ti := statusIndex(current), statusIndex(target)
+			switch {
+			case current == api.Archived:
+				// The sole archived exception: an admin moving the game out of archived.
+				if !account.IsAdmin {
+					return updateGameForbidden("only an admin may change the status of an archived game"), nil
+				}
+			case ti > ci:
+				// Forward, skips allowed.
+				if !(account.IsAdmin || activeGM) {
+					return updateGameForbidden("only an active game master or an admin may advance a game's status"), nil
+				}
+			case current == api.Paused && target == api.Active:
+				// Un-pause is the one non-archived backward move, admin only.
+				if !account.IsAdmin {
+					return updateGameForbidden("only an admin may un-pause a game"), nil
+				}
+			default:
+				return updateGameConflict(fmt.Sprintf("cannot change status from %q to %q", current, target)), nil
+			}
+			st := string(target)
+			upd.Status = &st
+		}
+	}
+
+	// name / description: an active GM or an admin. (Archived already rejected above.)
+	if body.Name != nil {
+		name := strings.TrimSpace(*body.Name)
+		if name == "" {
+			return updateGameBadRequest("name must not be empty"), nil
+		}
+		if name != game.Name {
+			if !(account.IsAdmin || activeGM) {
+				return updateGameForbidden("only an active game master or an admin may edit game metadata"), nil
+			}
+			upd.Name = &name
+		}
+	}
+	if body.Description != nil {
+		desc := *body.Description
+		if game.Description == nil || desc != *game.Description {
+			if !(account.IsAdmin || activeGM) {
+				return updateGameForbidden("only an active game master or an admin may edit game metadata"), nil
+			}
+			upd.Description = &desc
+		}
+	}
+
+	// isActive: admin-only hard-hide, orthogonal to status.
+	if body.IsActive != nil {
+		if *body.IsActive != game.IsActive {
+			if !account.IsAdmin {
+				return updateGameForbidden("only an admin may change a game's visibility"), nil
+			}
+			v := *body.IsActive
+			upd.IsActive = &v
+		}
+	}
+
+	// Every requested field may already match the game's state; a pure no-op returns
+	// the game unchanged rather than touching the store.
+	if upd.Status == nil && upd.Name == nil && upd.Description == nil && upd.IsActive == nil {
+		return api.UpdateGame200JSONResponse(apiGame(game)), nil
+	}
+
+	updated, err := s.store.UpdateGame(ctx, request.GameId, upd)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return updateGameNotFound("game not found"), nil
+	case err != nil:
+		return nil, err
+	}
+	return api.UpdateGame200JSONResponse(apiGame(updated)), nil
+}
+
+// updateGameUnauthorized builds the 401 response for UpdateGame.
+func updateGameUnauthorized(message string) api.UpdateGame401JSONResponse {
+	return api.UpdateGame401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code: "unauthorized", Message: message,
+	}}
+}
+
+// updateGameBadRequest builds the 400 response for UpdateGame.
+func updateGameBadRequest(message string) api.UpdateGame400JSONResponse {
+	return api.UpdateGame400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse{
+		Code: "bad_request", Message: message,
+	}}
+}
+
+// updateGameForbidden builds the 403 response for UpdateGame.
+func updateGameForbidden(message string) api.UpdateGame403JSONResponse {
+	return api.UpdateGame403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
+		Code: "forbidden", Message: message,
+	}}
+}
+
+// updateGameNotFound builds the 404 response for UpdateGame.
+func updateGameNotFound(message string) api.UpdateGame404JSONResponse {
+	return api.UpdateGame404JSONResponse{NotFoundJSONResponse: api.NotFoundJSONResponse{
+		Code: "not_found", Message: message,
+	}}
+}
+
+// updateGameConflict builds the 409 response for UpdateGame.
+func updateGameConflict(message string) api.UpdateGame409JSONResponse {
+	return api.UpdateGame409JSONResponse{ConflictJSONResponse: api.ConflictJSONResponse{
+		Code: "conflict", Message: message,
+	}}
 }
 
 // ListGameMembers returns a game's roster — every assignment, GMs and players,

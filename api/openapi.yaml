@@ -441,6 +441,59 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Games]
+      operationId: updateGame
+      summary: Update a game (status, metadata, visibility)
+      description: |
+        Applies a partial update to a game. Each field has its own rule from the
+        action matrix:
+          - status: advances along draft → recruiting → active → paused →
+            complete → archived (forward-only, skips allowed) for an active GM or
+            an admin. Backward moves are rejected with a 409 except paused → active
+            (un-pause) and moving out of archived, both admin-only.
+          - name / description: an active GM or an admin; rejected once archived.
+          - isActive: admin only; hides the game from non-admin listings,
+            orthogonal to status. Frozen while archived.
+        An archived game is otherwise frozen: the only accepted change is an admin
+        moving its status to another state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGameRequest'
+            examples:
+              advance:
+                summary: Advance the status (skips allowed)
+                value:
+                  status: recruiting
+              rename:
+                summary: Edit metadata
+                value:
+                  name: Alpha Campaign
+                  description: An updated blurb.
+              hide:
+                summary: Admin hard-hide
+                value:
+                  isActive: false
+      responses:
+        '200':
+          description: The updated game
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Game'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /games/{gameId}/members:
     parameters:
       - $ref: '#/components/parameters/GameId'
@@ -996,6 +1049,23 @@ components:
           minLength: 1
         description:
           type: string
+    UpdateGameRequest:
+      type: object
+      description: |
+        Partial update to a game; any subset of fields may be set and an omitted
+        field is left unchanged. status advances the lifecycle (forward-only, with
+        the admin-only paused→active and out-of-archived exceptions); isActive is
+        the admin-only hard-hide, orthogonal to status.
+      properties:
+        status:
+          $ref: '#/components/schemas/GameStatus'
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        isActive:
+          type: boolean
     ListGamesResponse:
       type: object
       required: [games]
