@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/mdhender/ecv4/internal/auth"
 	"github.com/mdhender/ecv4/internal/database"
 	"github.com/mdhender/ecv4/internal/store"
 )
@@ -201,6 +202,115 @@ func TestRunAccountCreateDuplicateReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "error:") {
 		t.Fatalf("stderr = %q, want it to report the error", stderr)
+	}
+}
+
+// TestRunResetPasswordWithSpecificSecret checks the reset-password alias sets a
+// caller-supplied password while leaving roles and active state untouched.
+func TestRunResetPasswordWithSpecificSecret(t *testing.T) {
+	ctx := context.Background()
+	dir := newTestDB(t)
+
+	if _, _, err := runCLI(t, "development",
+		"--db-dir", dir,
+		"database", "account", "create",
+		"--email", "reset@example.com", "--secret", "originalpw1", "--is-admin"); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	if _, _, err := runCLI(t, "development",
+		"--db-dir", dir,
+		"database", "account", "reset-password",
+		"--email", "reset@example.com", "--secret", "brandnewpw2"); err != nil {
+		t.Fatalf("reset-password: %v", err)
+	}
+
+	acct, hash, err := openStore(t, dir).Credentials(ctx, "reset@example.com")
+	if err != nil {
+		t.Fatalf("Credentials: %v", err)
+	}
+	if !acct.IsAdmin || !acct.IsActive {
+		t.Fatalf("reset-password changed roles: is_admin=%t is_active=%t, want both true", acct.IsAdmin, acct.IsActive)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte("brandnewpw2")) != nil {
+		t.Fatal("new password does not verify after reset")
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte("originalpw1")) == nil {
+		t.Fatal("old password still verifies after reset")
+	}
+}
+
+// TestRunResetPasswordGeneratesByDefault checks that reset-password with no
+// secret flag generates a new password. Using --seed makes the generated
+// passphrase deterministic so the test can verify the stored hash.
+func TestRunResetPasswordGeneratesByDefault(t *testing.T) {
+	ctx := context.Background()
+	dir := newTestDB(t)
+
+	if _, _, err := runCLI(t, "development",
+		"--db-dir", dir,
+		"database", "account", "create",
+		"--email", "gen@example.com", "--secret", "originalpw1"); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	seed := uint64(7)
+	stdout, _, err := runCLI(t, "development",
+		"--db-dir", dir,
+		"database", "account", "reset-password",
+		"--email", "gen@example.com", "--seed", "7")
+	if err != nil {
+		t.Fatalf("reset-password: %v", err)
+	}
+	if !strings.Contains(stdout, "generated secret:") {
+		t.Fatalf("stdout = %q, want a generated-secret notice", stdout)
+	}
+
+	expected, err := auth.GenerateSecret(&seed)
+	if err != nil {
+		t.Fatalf("GenerateSecret: %v", err)
+	}
+	_, hash, err := openStore(t, dir).Credentials(ctx, "gen@example.com")
+	if err != nil {
+		t.Fatalf("Credentials: %v", err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(expected)) != nil {
+		t.Fatal("stored hash does not match the seeded generated password")
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte("originalpw1")) == nil {
+		t.Fatal("old password still verifies after reset")
+	}
+}
+
+func TestRunResetPasswordUnknownEmail(t *testing.T) {
+	_, stderr, err := runCLI(t, "development",
+		"--db-dir", newTestDB(t),
+		"database", "account", "reset-password", "--email", "ghost@example.com")
+	if err == nil {
+		t.Fatal("expected an error resetting an unknown account")
+	}
+	if !strings.Contains(stderr, "no account with email") {
+		t.Fatalf("stderr = %q, want a no-such-account message", stderr)
+	}
+}
+
+func TestRunResetPasswordRejectsSecretAndGenerateTogether(t *testing.T) {
+	dir := newTestDB(t)
+	if _, _, err := runCLI(t, "development",
+		"--db-dir", dir,
+		"database", "account", "create",
+		"--email", "both@example.com", "--secret", "originalpw1"); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	_, stderr, err := runCLI(t, "development",
+		"--db-dir", dir,
+		"database", "account", "reset-password",
+		"--email", "both@example.com", "--secret", "brandnewpw2", "--generate-secret")
+	if err == nil {
+		t.Fatal("expected an error when both --secret and --generate-secret are set")
+	}
+	if !strings.Contains(stderr, "either --secret or --generate-secret") {
+		t.Fatalf("stderr = %q, want a mutual-exclusion message", stderr)
 	}
 }
 

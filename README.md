@@ -67,6 +67,7 @@ game-server version                          # print the version
 game-server database create <PATH>           # create ecv4.db in an existing dir (or :memory: to verify migrations)
 game-server database account create --email <e> [--is-admin] [--secret <s>]
 game-server database account update --email <e> [--is-active[=false]] [--is-admin[=false]] [--secret <s> | --generate-secret]
+game-server database account reset-password --email <e> [--secret <s> | --generate-secret]   # generates one if omitted
 ```
 
 The shared `--development` flag enables the `POST /admin/shutdown` route when
