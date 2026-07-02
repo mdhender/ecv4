@@ -441,6 +441,31 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /games/{gameId}/members:
+    parameters:
+      - $ref: '#/components/parameters/GameId'
+    get:
+      tags: [Games]
+      operationId: listGameMembers
+      summary: List a game's members
+      description: |
+        Lists the game's roster: every assignment (a game_account_role row), GMs
+        and players, active and dropped alike. A dropped member stays listed with
+        isActive=false so a GM can see who has left. Visible to an admin or any
+        account ever assigned to the game; an unknown or not-visible game is a 404.
+      responses:
+        '200':
+          description: The game's members
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMembersResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /games/{gameId}/turns:
     parameters:
       - $ref: '#/components/parameters/GameId'
@@ -902,6 +927,36 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MyGame'
+    Member:
+      type: object
+      description: |
+        One entry in a game's roster: an account's assignment to the game
+        (a game_account_role row), with its handle and role. A dropped member
+        remains listed with isActive=false.
+      required: [accountId, handle, isGm, isActive]
+      properties:
+        accountId:
+          type: integer
+          format: int64
+          description: The account assigned to the game.
+        handle:
+          type: string
+          description: The member's handle within this game.
+          example: Rome
+        isGm:
+          type: boolean
+          description: Whether the member is a game master in this game.
+        isActive:
+          type: boolean
+          description: Whether the membership is active (false if the member was dropped).
+    ListMembersResponse:
+      type: object
+      required: [members]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/Member'
     Session:
       type: object
       description: |
