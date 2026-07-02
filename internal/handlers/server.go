@@ -236,8 +236,11 @@ func (s *Server) Logout(ctx context.Context, request api.LogoutRequestObject) (a
 
 func (s *Server) ShutdownServer(ctx context.Context, request api.ShutdownServerRequestObject) (api.ShutdownServerResponseObject, error) {
 	// Gated to development: without a wired trigger the route behaves as if it
-	// does not exist. Checked before auth so the capability is invisible (404,
-	// not 403) in any deployment that did not opt in with --development.
+	// does not exist. In normal wiring a disabled route is already hidden ahead
+	// of this handler (see hideRoute in NewHTTPHandler), so this check is
+	// defense-in-depth: it keeps the capability invisible (404, not 403) and
+	// guards s.shutdown() below from a nil call if the handler is ever reached
+	// without that wrapper.
 	if s.shutdown == nil {
 		return api.ShutdownServer404JSONResponse{NotFoundJSONResponse: api.NotFoundJSONResponse{
 			Code: "not_found", Message: "not found",

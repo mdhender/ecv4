@@ -14,10 +14,11 @@ scope and are not counted as gaps.
 | 1 | API server with authn/authz + graceful shutdown | ✅ |
 | 2 | Server-enforced admin role gating management routes | ✅ |
 | 3 | Minimal CLI: create DB, create admin, reset password | ✅ |
-| 4 | Dogfood routes (accounts, health, version, shutdown route) | ✅ (with 2 caveats) |
+| 4 | Dogfood routes (accounts, health, version, shutdown route) | ✅ |
 
-Overall: the MVP is functionally accomplished end to end. Two design caveats and
-a few notes are listed under **Gaps & risks**.
+Overall: the MVP is functionally accomplished end to end. The design caveats
+found in this pass have since been fixed; remaining items are notes and deferred
+follow-ups listed under **Gaps & risks**.
 
 ## Goal 1 — server + authn/authz
 
@@ -90,22 +91,23 @@ account → `/me` → admin deactivates → deactivated account is locked out of
   flag drives both the shutdown route and the `database create` admin seed;
   seeding still works (dev admin `penny@example.com` seeds on
   `database create --development`).
-- **404-before-auth ordering does NOT fully hold (⚠️).** The handler checks
-  `s.shutdown == nil` → 404 *before* `requireAdmin`, but the spec marks
-  `/admin/shutdown` secured (global `bearerAuth`), so `requireBearer` runs
-  **before the handler**. Result:
-  - Disabled route + valid admin token → 404 (as intended).
-  - Disabled route + **no token → 401**, while a genuinely unknown path
-    (`/admin/nope`) → 404 from the mux. So the route's existence leaks to
-    unauthenticated probes in prod; it is only "invisible" to callers who
-    already hold a valid token. Verified live.
+- **404-before-auth ordering: FIXED (issue #1).** Previously the handler's
+  `s.shutdown == nil` → 404 ran *after* the spec-driven `requireBearer`
+  middleware, so a disabled route answered a no-token probe with 401 (and a
+  wrong-method probe with 405) — both leaking its existence, unlike a genuinely
+  unknown path which 404s at the mux. Now `NewHTTPHandler` wraps the router with
+  `hideRoute` when the route is disabled, answering every method and every caller
+  with the same 404 as any unknown path *before* auth runs. The handler's own
+  check remains as defense-in-depth (and to guard the nil trigger). Verified
+  live: disabled `/admin/shutdown` is byte-identical to `/admin/nope` for
+  no-token POST and for GET.
 
 ## Gaps & risks
 
 | # | Finding | Recommendation | Size | Issue |
 |---|---------|----------------|------|-------|
 | 1 | **Out-of-scope game stubs returned empty 200** (`return nil, nil` → strict layer writes nothing). Not a panic/500 — a misleading success. | **FIXED** this pass: stubs return `errNotImplemented`, mapped to 501 with the standard envelope; malformed body → 400 envelope; other errors → 500 without leaking internal text (`internal/handlers/wiring.go`, `server.go`). | done (trivial) | resolved |
-| 2 | **Shutdown 404-masking leaks via 401** to unauthenticated probes (see above). The stated "invisible in prod" goal isn't met for no-token callers. | Either accept it (401 vs 404 is a weak signal) **or** mark the op `security: []` and do all auth inside the handler so the 404 check truly runs first, **or** don't register the route at all unless `--development`. Recommend documenting the current behavior; a real fix is small. | small | [#1](https://github.com/mdhender/ecv4/issues/1) |
+| 2 | **Shutdown 404-masking leaks via 401** to unauthenticated probes (see above). The stated "invisible in prod" goal isn't met for no-token callers. | **FIXED**: `NewHTTPHandler` hides a disabled route ahead of the router (`hideRoute`), so every method/caller gets the same 404 as any unknown path — no 401/405 leak. Covered by `TestShutdownDisabledIsInvisible`. | done (small) | resolved |
 | 3 | **Prod does not require a fixed JWT secret.** `resolveJWTSecret` only *warns* and generates an ephemeral secret when `ECV4_JWT_SECRET` is unset — regardless of `ECV4_ENV` — so a prod restart silently invalidates all tokens. | Fail startup when the secret is unset and `ECV4_ENV=production`. `cmd/game-server/main.go:444`. | small | [#2](https://github.com/mdhender/ecv4/issues/2) |
 | 4 | **3c has no discoverable `reset-password` verb.** | **FIXED**: added `database account reset-password --email …` forwarding to `updateAccount` (`internal/cli/cli.go`). | done (trivial) | resolved |
 | 5 | **No automated CLI tests.** `cmd/game-server` has no `_test.go`; CLI flows validated only manually. | Add a smoke test that shells the built binary against a temp DB, or extract the exec bodies into a testable package. | medium | [#4](https://github.com/mdhender/ecv4/issues/4) |
@@ -145,7 +147,8 @@ GET  /accounts (player)            -> 403
 PATCH /accounts/{id} isActive=false-> 200; deactivated /me -> 401; re-login -> 401
 POST /auth/refresh (rotate)        -> 200; reuse old -> 401; rotated -> 401
 POST /auth/logout                  -> 204; reuse refresh -> 401
-POST /admin/shutdown (no token)    -> 401     # unknown /admin/nope -> 404 (leak, finding #2)
+POST /admin/shutdown (no token)    -> 401     # when ENABLED (--development)
+POST /admin/shutdown (disabled)    -> 404     # invisible: identical to unknown /admin/nope (finding #2 fixed)
 POST /admin/shutdown (player)      -> 403
 POST /admin/shutdown (admin)       -> 202, graceful drain, exit 0, port freed
 GET  /games (admin)                -> 501 not_implemented   # after fix #1 (was empty 200)
