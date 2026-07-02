@@ -324,13 +324,19 @@ paths:
       tags: [Games]
       operationId: createGame
       summary: Create a game
-      description: Requires an admin or GM role.
+      description: Requires an admin role.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateGameRequest'
+            examples:
+              basic:
+                value:
+                  code: ALPHA
+                  name: Alpha Campaign
+                  description: The first playtest game.
       responses:
         '201':
           description: Game created
@@ -344,6 +350,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /games/{gameId}:
     parameters:
       - $ref: '#/components/parameters/GameId'
@@ -744,7 +752,7 @@ components:
           format: int64
         code:
           type: string
-          pattern: '^[a-z0-9][a-z0-9-]*$'
+          pattern: '^[A-Z][A-Z]+$'
         name:
           type: string
         status:
@@ -757,7 +765,7 @@ components:
       properties:
         code:
           type: string
-          pattern: '^[a-z0-9][a-z0-9-]*$'
+          pattern: '^[A-Z][A-Z]+$'
         name:
           type: string
           minLength: 1
@@ -784,7 +792,7 @@ components:
         code:
           type: string
           description: The game's stable code.
-          example: alpha
+          example: ALPHA
         isActive:
           type: boolean
           description: Whether the game itself is active.

@@ -419,11 +419,6 @@ func (s *Server) ListGames(ctx context.Context, request api.ListGamesRequestObje
 	return nil, errNotImplemented
 }
 
-func (s *Server) CreateGame(ctx context.Context, request api.CreateGameRequestObject) (api.CreateGameResponseObject, error) {
-	// TODO: require GM/admin and create a game.
-	return nil, errNotImplemented
-}
-
 func (s *Server) GetGame(ctx context.Context, request api.GetGameRequestObject) (api.GetGameResponseObject, error) {
 	// TODO: enforce object-level authorization and return game.
 	return nil, errNotImplemented

@@ -457,9 +457,9 @@ func TestGamesForAccount(t *testing.T) {
 
 	// alpha (active) and beta (inactive/archived). The caller is a GM in alpha
 	// and a player in beta; the archived game must still appear.
-	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(10, 'alpha', 1);")
-	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(20, 'beta', 0);")
-	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(30, 'gamma', 1);")
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(10, 'ALPHA', 1);")
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(20, 'BETA', 0);")
+	exec(t, pool, "INSERT INTO games(id, code, is_active) VALUES(30, 'GAMMA', 1);")
 
 	exec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(10, 1, 'Overlord', 1, 1);")
 	exec(t, pool, "INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(20, 1, 'Rome', 0, 1);")
@@ -473,8 +473,8 @@ func TestGamesForAccount(t *testing.T) {
 		t.Fatalf("GamesForAccount: %v", err)
 	}
 	want := []store.GameMembership{
-		{GameID: 10, Code: "alpha", IsActive: true, Handle: "Overlord", IsGM: true},
-		{GameID: 20, Code: "beta", IsActive: false, Handle: "Rome", IsGM: false},
+		{GameID: 10, Code: "ALPHA", IsActive: true, Handle: "Overlord", IsGM: true},
+		{GameID: 20, Code: "BETA", IsActive: false, Handle: "Rome", IsGM: false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d memberships, want %d: %+v", len(got), len(want), got)
@@ -492,6 +492,47 @@ func TestGamesForAccount(t *testing.T) {
 	}
 	if len(none) != 0 {
 		t.Fatalf("got %d memberships for unknown account, want 0", len(none))
+	}
+}
+
+func TestCreateGame(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+
+	desc := "The first playtest game."
+	game, err := st.CreateGame(ctx, "ALPHA", "Alpha Campaign", &desc)
+	if err != nil {
+		t.Fatalf("CreateGame: %v", err)
+	}
+	if game.ID == 0 {
+		t.Fatal("CreateGame returned a zero id")
+	}
+	// A new game starts in draft, active, with the given code/name/description.
+	want := store.Game{
+		ID:          game.ID,
+		Code:        "ALPHA",
+		Name:        "Alpha Campaign",
+		Status:      "draft",
+		Description: &desc,
+		IsActive:    true,
+	}
+	if game.Code != want.Code || game.Name != want.Name || game.Status != want.Status ||
+		game.Description == nil || *game.Description != desc || !game.IsActive {
+		t.Fatalf("CreateGame = %+v, want %+v", game, want)
+	}
+
+	// A nil description is stored as NULL and round-trips as nil.
+	noDesc, err := st.CreateGame(ctx, "BETA", "Beta", nil)
+	if err != nil {
+		t.Fatalf("CreateGame(nil desc): %v", err)
+	}
+	if noDesc.Description != nil {
+		t.Fatalf("Description = %v, want nil", *noDesc.Description)
+	}
+
+	// A duplicate code is a conflict, not a generic error.
+	if _, err := st.CreateGame(ctx, "ALPHA", "Another", nil); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("duplicate code: got %v, want ErrConflict", err)
 	}
 }
 
