@@ -25,23 +25,23 @@ func RequireBearerJWT(verifier Verifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authz := r.Header.Get("Authorization")
 		if authz == "" {
-			httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing Authorization header")
+			httputil.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "missing Authorization header")
 			return
 		}
 
 		prefix := "Bearer "
 		if !strings.HasPrefix(authz, prefix) {
-			httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "Authorization header must use Bearer scheme")
+			httputil.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "Authorization header must use Bearer scheme")
 			return
 		}
 
 		claims, err := verifier.Verify(strings.TrimSpace(strings.TrimPrefix(authz, prefix)))
 		if err != nil {
-			httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "invalid access token")
+			httputil.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "invalid access token")
 			return
 		}
 		if !claims.ExpiresAt.IsZero() && time.Now().After(claims.ExpiresAt) {
-			httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "expired access token")
+			httputil.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "expired access token")
 			return
 		}
 

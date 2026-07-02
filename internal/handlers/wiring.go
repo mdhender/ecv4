@@ -24,14 +24,14 @@ import (
 func NewHTTPHandler(server *Server, mux *http.ServeMux, verifier auth.Verifier) http.Handler {
 	strict := api.NewStrictHandlerWithOptions(server, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
-			httputil.WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+			httputil.WriteError(w, r, http.StatusBadRequest, "bad_request", err.Error())
 		},
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 			if errors.Is(err, errNotImplemented) {
-				httputil.WriteError(w, http.StatusNotImplemented, "not_implemented", "this endpoint is not implemented yet")
+				httputil.WriteError(w, r, http.StatusNotImplemented, "not_implemented", "this endpoint is not implemented yet")
 				return
 			}
-			httputil.WriteError(w, http.StatusInternalServerError, "internal", "internal server error")
+			httputil.WriteError(w, r, http.StatusInternalServerError, "internal", "internal server error")
 		},
 	})
 	apiHandler := api.HandlerWithOptions(strict, api.StdHTTPServerOptions{

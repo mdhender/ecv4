@@ -17,6 +17,9 @@ type ErrorResponse struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
-func WriteError(w http.ResponseWriter, status int, code string, message string) {
-	WriteJSON(w, status, ErrorResponse{Code: code, Message: message})
+// WriteError renders the standard error envelope. It fills requestId from the
+// request context (set by RequestLogger) so a client's error report can be tied
+// back to the matching server log line; the field is omitted when no id is set.
+func WriteError(w http.ResponseWriter, r *http.Request, status int, code string, message string) {
+	WriteJSON(w, status, ErrorResponse{Code: code, Message: message, RequestID: RequestID(r.Context())})
 }
