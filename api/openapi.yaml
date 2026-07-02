@@ -466,6 +466,52 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Games]
+      operationId: addGameMember
+      summary: Add a member to a game
+      description: |
+        Assigns an account to the game as a GM or a net-new player. Requires an
+        admin or an active GM of the game. Adding a GM is allowed in any status
+        except archived; adding a player is allowed only while recruiting (an
+        admin bypasses that window). When handle is omitted it defaults to
+        player_N, N = the game's current membership count + 1. A supplied or
+        computed handle already in use, or an account that is already a member,
+        is a 409; use the update endpoint to reactivate a dropped member.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMemberRequest'
+            examples:
+              firstGm:
+                summary: Assign the first GM
+                value:
+                  accountId: 2
+                  handle: Overlord
+                  isGm: true
+              addPlayer:
+                summary: Add a player with a default handle
+                value:
+                  accountId: 5
+      responses:
+        '201':
+          description: Member added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /games/{gameId}/turns:
     parameters:
       - $ref: '#/components/parameters/GameId'
@@ -957,6 +1003,30 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Member'
+    AddMemberRequest:
+      type: object
+      description: |
+        Request to assign an account to a game. handle is optional and defaults to
+        player_N (N = the game's current membership count + 1) when omitted; when
+        supplied it must be unique within the game.
+      required: [accountId]
+      properties:
+        accountId:
+          type: integer
+          format: int64
+          description: The account to assign to the game.
+        handle:
+          type: string
+          pattern: '^[A-Za-z][A-Za-z0-9._-]+$'
+          description: |
+            The member's handle, unique within the game. Two or more characters,
+            starting with a letter, using only letters, digits, '.', '_' or '-'.
+            Omit to default to player_N.
+          example: Overlord
+        isGm:
+          type: boolean
+          default: false
+          description: Assign the member as a game master rather than a player.
     Session:
       type: object
       description: |

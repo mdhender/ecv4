@@ -21,6 +21,15 @@ var ErrNotFound = errors.New("not found")
 // as creating an account with an email that already exists.
 var ErrConflict = errors.New("already exists")
 
+// ErrMemberExists is returned by AddMember when the target account already has a
+// membership row in the game (active or dropped). The caller should reactivate
+// the existing membership rather than add a new one.
+var ErrMemberExists = errors.New("account is already a member")
+
+// ErrHandleTaken is returned by AddMember when the handle — supplied or the
+// computed player_N default — is already in use by another member of the game.
+var ErrHandleTaken = errors.New("handle already in use")
+
 // Account is a row from the accounts table, without the hashed secret, which
 // never leaves the store.
 type Account struct {
@@ -742,6 +751,143 @@ func (s *Store) MembersForGame(ctx context.Context, gameID int64) ([]Member, err
 		return nil, fmt.Errorf("members for game %d: %w", gameID, err)
 	}
 	return members, nil
+}
+
+// MemberForGame returns the account's membership row in the game, active or
+// dropped. It returns ErrNotFound when the account was never assigned to the
+// game. Callers use it to decide authorization (an active GM) and to detect an
+// existing membership before adding one.
+//
+// ctx bounds acquiring the connection and running the query; a cancelled ctx
+// interrupts the read.
+func (s *Store) MemberForGame(ctx context.Context, gameID, accountID int64) (Member, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Member{}, fmt.Errorf("member for game: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	member := Member{AccountID: accountID}
+	found := false
+	err = sqlitex.Execute(conn,
+		`SELECT handle, is_gm, is_active
+			FROM game_account_role
+			WHERE game_id = ? AND account_id = ?;`,
+		&sqlitex.ExecOptions{
+			Args: []any{gameID, accountID},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				found = true
+				member.Handle = stmt.ColumnText(0)
+				member.IsGM = stmt.ColumnInt(1) != 0
+				member.IsActive = stmt.ColumnInt(2) != 0
+				return nil
+			},
+		})
+	if err != nil {
+		return Member{}, fmt.Errorf("member for game %d account %d: %w", gameID, accountID, err)
+	}
+	if !found {
+		return Member{}, ErrNotFound
+	}
+	return member, nil
+}
+
+// AddMember assigns accountID to the game as a new active membership and returns
+// the created Member. When handle is empty it defaults to player_N, where N is
+// the game's current membership count (active or dropped) plus one. The count,
+// default, uniqueness checks, and insert run in one transaction so the computed
+// default is consistent.
+//
+// It returns:
+//   - ErrNotFound if accountID does not name an existing account (so the caller
+//     can reject a bad target with a 400 rather than surfacing a raw FK error);
+//   - ErrMemberExists if the account is already assigned to the game (the caller
+//     should reactivate the dropped membership instead of adding a new one);
+//   - ErrHandleTaken if the handle (supplied or the computed default) is already
+//     in use in the game — the default is never auto-bumped.
+//
+// It does not enforce role or status gates; the handler applies those before
+// calling. ctx bounds the whole operation.
+func (s *Store) AddMember(ctx context.Context, gameID, accountID int64, handle string, isGM bool) (member Member, err error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Member{}, fmt.Errorf("add member: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	// Immediate transaction: the player_N default reads a count that the insert
+	// then depends on, so take the write lock up front to keep the two consistent.
+	endTx, err := sqlitex.ImmediateTransaction(conn)
+	if err != nil {
+		return Member{}, fmt.Errorf("add member: %w", err)
+	}
+	defer endTx(&err)
+
+	// The target account must exist; an FK failure on insert would otherwise be an
+	// opaque 500, so surface a missing account as ErrNotFound for a clean 400.
+	if ok, e := existsInt(conn, "SELECT 1 FROM accounts WHERE id = ?;", accountID); e != nil {
+		return Member{}, fmt.Errorf("add member: %w", e)
+	} else if !ok {
+		return Member{}, ErrNotFound
+	}
+
+	// An account is assigned to a game at most once (UNIQUE(game_id, account_id));
+	// a second add is a conflict pointing at the reactivate path.
+	if ok, e := existsInt(conn, "SELECT 1 FROM game_account_role WHERE game_id = ? AND account_id = ?;", gameID, accountID); e != nil {
+		return Member{}, fmt.Errorf("add member: %w", e)
+	} else if ok {
+		return Member{}, ErrMemberExists
+	}
+
+	if handle == "" {
+		var count int64
+		if e := sqlitex.Execute(conn, "SELECT COUNT(*) FROM game_account_role WHERE game_id = ?;", &sqlitex.ExecOptions{
+			Args: []any{gameID},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				count = stmt.ColumnInt64(0)
+				return nil
+			},
+		}); e != nil {
+			return Member{}, fmt.Errorf("add member: %w", e)
+		}
+		handle = fmt.Sprintf("player_%d", count+1)
+	}
+
+	// Check the handle explicitly so a collision (supplied or the computed default)
+	// is a clean ErrHandleTaken rather than a raw UNIQUE(game_id, handle) failure,
+	// and so we never auto-bump the default.
+	if ok, e := existsInt(conn, "SELECT 1 FROM game_account_role WHERE game_id = ? AND handle = ?;", gameID, handle); e != nil {
+		return Member{}, fmt.Errorf("add member: %w", e)
+	} else if ok {
+		return Member{}, ErrHandleTaken
+	}
+
+	if e := sqlitex.Execute(conn,
+		"INSERT INTO game_account_role(game_id, account_id, handle, is_gm, is_active) VALUES(?, ?, ?, ?, 1);",
+		&sqlitex.ExecOptions{Args: []any{gameID, accountID, handle, boolToInt(isGM)}}); e != nil {
+		// The pre-checks above cover the expected conflicts; a UNIQUE violation here
+		// is an unexpected race, still reported as a generic conflict.
+		if sqlite.ErrCode(e) == sqlite.ResultConstraintUnique {
+			return Member{}, fmt.Errorf("add member: %w", ErrConflict)
+		}
+		return Member{}, fmt.Errorf("add member: %w", e)
+	}
+
+	return Member{AccountID: accountID, Handle: handle, IsGM: isGM, IsActive: true}, nil
+}
+
+// existsInt reports whether query (which selects a constant when a row matches)
+// returns at least one row for the given args.
+func existsInt(conn *sqlite.Conn, query string, args ...any) (bool, error) {
+	found := false
+	err := sqlitex.Execute(conn, query, &sqlitex.ExecOptions{
+		Args: args,
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			found = true
+			return nil
+		},
+	})
+	return found, err
 }
 
 // Credentials returns the account and its stored bcrypt password hash for the
