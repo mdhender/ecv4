@@ -19,6 +19,13 @@ import (
 
 var _ api.StrictServerInterface = (*Server)(nil)
 
+// errNotImplemented is returned by the out-of-scope game handlers that have no
+// service-layer implementation yet. The strict response error handler (see
+// NewHTTPHandler) maps it to a 501 with the standard error envelope, so hitting
+// one of these routes yields an honest "not implemented" instead of a
+// misleading empty 200.
+var errNotImplemented = errors.New("not implemented")
+
 // Server carries the dependencies the handlers need: the store for persistence
 // and the token service for issuing and verifying JWTs. shutdown, when non-nil,
 // enables the development-only POST /admin/shutdown route and triggers the
@@ -335,40 +342,40 @@ func unauthorized(message string) api.GetMe401JSONResponse {
 
 func (s *Server) ListGames(ctx context.Context, request api.ListGamesRequestObject) (api.ListGamesResponseObject, error) {
 	// TODO: list games visible to the authenticated user.
-	return nil, nil
+	return nil, errNotImplemented
 }
 
 func (s *Server) CreateGame(ctx context.Context, request api.CreateGameRequestObject) (api.CreateGameResponseObject, error) {
 	// TODO: require GM/admin and create a game.
-	return nil, nil
+	return nil, errNotImplemented
 }
 
 func (s *Server) GetGame(ctx context.Context, request api.GetGameRequestObject) (api.GetGameResponseObject, error) {
 	// TODO: enforce object-level authorization and return game.
-	return nil, nil
+	return nil, errNotImplemented
 }
 
 func (s *Server) ListTurns(ctx context.Context, request api.ListTurnsRequestObject) (api.ListTurnsResponseObject, error) {
 	// TODO: enforce access to game and return turns.
-	return nil, nil
+	return nil, errNotImplemented
 }
 
 func (s *Server) GetTurn(ctx context.Context, request api.GetTurnRequestObject) (api.GetTurnResponseObject, error) {
 	// TODO: enforce access to game/turn and return turn.
-	return nil, nil
+	return nil, errNotImplemented
 }
 
 func (s *Server) ValidateOrders(ctx context.Context, request api.ValidateOrdersRequestObject) (api.ValidateOrdersResponseObject, error) {
 	// TODO: parse and validate orders without creating a submission.
-	return nil, nil
+	return nil, errNotImplemented
 }
 
 func (s *Server) SubmitOrders(ctx context.Context, request api.SubmitOrdersRequestObject) (api.SubmitOrdersResponseObject, error) {
 	// TODO: validate, authorize faction ownership, and create a submission.
-	return nil, nil
+	return nil, errNotImplemented
 }
 
 func (s *Server) GetOrderSubmission(ctx context.Context, request api.GetOrderSubmissionRequestObject) (api.GetOrderSubmissionResponseObject, error) {
 	// TODO: enforce access to submission and return it.
-	return nil, nil
+	return nil, errNotImplemented
 }
