@@ -1,10 +1,9 @@
-package main
+package cli
 
 import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"strings"
 	"testing"
 
@@ -14,9 +13,10 @@ import (
 	"github.com/mdhender/ecv4/internal/store"
 )
 
-// quietLogger discards log output so tests don't spam stdout.
-func quietLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+// newTestApp returns an App that discards output and runs in development, for
+// tests that call the business-logic methods directly.
+func newTestApp() *App {
+	return &App{Env: "development", Stdout: io.Discard, Stderr: io.Discard}
 }
 
 // newTestDB creates a fresh, migrated database in a temp directory and returns
@@ -42,62 +42,11 @@ func openStore(t *testing.T, dir string) *store.Store {
 	return store.New(pool)
 }
 
-func TestResolveJWTSecretConfigured(t *testing.T) {
-	configured := strings.Repeat("k", 32)
-	for _, env := range []string{"development", "production", ""} {
-		secret, err := resolveJWTSecret(env, configured, quietLogger())
-		if err != nil {
-			t.Fatalf("env=%q: unexpected error: %v", env, err)
-		}
-		if string(secret) != configured {
-			t.Fatalf("env=%q: got %q, want configured secret", env, secret)
-		}
-	}
-}
-
-func TestResolveJWTSecretTooShort(t *testing.T) {
-	if _, err := resolveJWTSecret("production", strings.Repeat("k", 31), quietLogger()); err == nil {
-		t.Fatal("expected error for secret shorter than 32 bytes")
-	}
-}
-
-func TestResolveJWTSecretProductionRequiresSecret(t *testing.T) {
-	if _, err := resolveJWTSecret("production", "", quietLogger()); err == nil {
-		t.Fatal("expected error when ECV4_ENV=production and no secret is configured")
-	}
-}
-
-func TestResolveJWTSecretNonProductionGeneratesEphemeral(t *testing.T) {
-	for _, env := range []string{"development", "staging", ""} {
-		secret, err := resolveJWTSecret(env, "", quietLogger())
-		if err != nil {
-			t.Fatalf("env=%q: unexpected error: %v", env, err)
-		}
-		if len(secret) != 32 {
-			t.Fatalf("env=%q: got %d-byte ephemeral secret, want 32", env, len(secret))
-		}
-	}
-}
-
-func TestResolveJWTSecretEphemeralIsRandom(t *testing.T) {
-	a, err := resolveJWTSecret("development", "", quietLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := resolveJWTSecret("development", "", quietLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(a) == string(b) {
-		t.Fatal("expected two ephemeral secrets to differ")
-	}
-}
-
 func TestCreateAccountHappyPath(t *testing.T) {
 	ctx := context.Background()
 	dir := newTestDB(t)
 
-	if err := createAccount(ctx, dir, "  Boss@Example.com ", "supersecret1", nil, true, true); err != nil {
+	if err := newTestApp().createAccount(ctx, dir, "  Boss@Example.com ", "supersecret1", nil, true, true); err != nil {
 		t.Fatalf("createAccount: %v", err)
 	}
 
@@ -119,7 +68,7 @@ func TestCreateAccountGeneratesSecretWhenOmitted(t *testing.T) {
 	dir := newTestDB(t)
 
 	seed := uint64(42)
-	if err := createAccount(ctx, dir, "player@example.com", "", &seed, false, false); err != nil {
+	if err := newTestApp().createAccount(ctx, dir, "player@example.com", "", &seed, false, false); err != nil {
 		t.Fatalf("createAccount: %v", err)
 	}
 
@@ -136,7 +85,7 @@ func TestCreateAccountGeneratesSecretWhenOmitted(t *testing.T) {
 }
 
 func TestCreateAccountRequiresEmail(t *testing.T) {
-	if err := createAccount(context.Background(), newTestDB(t), "   ", "secret12", nil, true, false); err == nil {
+	if err := newTestApp().createAccount(context.Background(), newTestDB(t), "   ", "secret12", nil, true, false); err == nil {
 		t.Fatal("expected an error for an empty email")
 	}
 }
@@ -144,11 +93,12 @@ func TestCreateAccountRequiresEmail(t *testing.T) {
 func TestCreateAccountDuplicateEmailIsConflict(t *testing.T) {
 	ctx := context.Background()
 	dir := newTestDB(t)
+	app := newTestApp()
 
-	if err := createAccount(ctx, dir, "dup@example.com", "secret12", nil, true, false); err != nil {
+	if err := app.createAccount(ctx, dir, "dup@example.com", "secret12", nil, true, false); err != nil {
 		t.Fatalf("first createAccount: %v", err)
 	}
-	err := createAccount(ctx, dir, "dup@example.com", "secret12", nil, true, false)
+	err := app.createAccount(ctx, dir, "dup@example.com", "secret12", nil, true, false)
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("second createAccount: got %v, want ErrConflict", err)
 	}
@@ -157,13 +107,14 @@ func TestCreateAccountDuplicateEmailIsConflict(t *testing.T) {
 func TestUpdateAccountChangesRoleAndSecret(t *testing.T) {
 	ctx := context.Background()
 	dir := newTestDB(t)
+	app := newTestApp()
 
-	if err := createAccount(ctx, dir, "u@example.com", "originalpw1", nil, true, false); err != nil {
+	if err := app.createAccount(ctx, dir, "u@example.com", "originalpw1", nil, true, false); err != nil {
 		t.Fatalf("createAccount: %v", err)
 	}
 
 	isAdmin := true
-	if err := updateAccount(ctx, dir, "u@example.com", nil, &isAdmin, true, "newpassword2", false, nil); err != nil {
+	if err := app.updateAccount(ctx, dir, "u@example.com", nil, &isAdmin, true, "newpassword2", false, nil); err != nil {
 		t.Fatalf("updateAccount: %v", err)
 	}
 
@@ -183,7 +134,7 @@ func TestUpdateAccountChangesRoleAndSecret(t *testing.T) {
 }
 
 func TestUpdateAccountRejectsSecretAndGenerateTogether(t *testing.T) {
-	err := updateAccount(context.Background(), newTestDB(t), "u@example.com", nil, nil, true, "somesecret1", true, nil)
+	err := newTestApp().updateAccount(context.Background(), newTestDB(t), "u@example.com", nil, nil, true, "somesecret1", true, nil)
 	if err == nil || !strings.Contains(err.Error(), "either --secret or --generate-secret") {
 		t.Fatalf("got %v, want a secret/generate-secret conflict error", err)
 	}
@@ -192,10 +143,11 @@ func TestUpdateAccountRejectsSecretAndGenerateTogether(t *testing.T) {
 func TestUpdateAccountRequiresAChange(t *testing.T) {
 	ctx := context.Background()
 	dir := newTestDB(t)
-	if err := createAccount(ctx, dir, "u@example.com", "originalpw1", nil, true, false); err != nil {
+	app := newTestApp()
+	if err := app.createAccount(ctx, dir, "u@example.com", "originalpw1", nil, true, false); err != nil {
 		t.Fatalf("createAccount: %v", err)
 	}
-	err := updateAccount(ctx, dir, "u@example.com", nil, nil, false, "", false, nil)
+	err := app.updateAccount(ctx, dir, "u@example.com", nil, nil, false, "", false, nil)
 	if err == nil || !strings.Contains(err.Error(), "nothing to update") {
 		t.Fatalf("got %v, want a nothing-to-update error", err)
 	}
@@ -203,7 +155,7 @@ func TestUpdateAccountRequiresAChange(t *testing.T) {
 
 func TestUpdateAccountUnknownEmail(t *testing.T) {
 	isActive := false
-	err := updateAccount(context.Background(), newTestDB(t), "ghost@example.com", &isActive, nil, false, "", false, nil)
+	err := newTestApp().updateAccount(context.Background(), newTestDB(t), "ghost@example.com", &isActive, nil, false, "", false, nil)
 	if err == nil || !strings.Contains(err.Error(), "no account with email") {
 		t.Fatalf("got %v, want a no-such-account error", err)
 	}
@@ -213,7 +165,7 @@ func TestSeedDevelopmentAdmin(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("skips in-memory database", func(t *testing.T) {
-		if err := seedDevelopmentAdmin(ctx, "development", database.MemoryPath); err != nil {
+		if err := newTestApp().seedDevelopmentAdmin(ctx, database.MemoryPath); err != nil {
 			t.Fatalf("expected a no-op, got %v", err)
 		}
 	})
@@ -222,7 +174,8 @@ func TestSeedDevelopmentAdmin(t *testing.T) {
 		dir := newTestDB(t)
 		t.Setenv("ECV4_DEVELOPMENT_ADMIN_EMAIL", "admin@example.com")
 		t.Setenv("ECV4_DEVELOPMENT_ADMIN_SECRET", "adminsecret1")
-		if err := seedDevelopmentAdmin(ctx, "production", dir); err != nil {
+		app := &App{Env: "production", Stdout: io.Discard, Stderr: io.Discard}
+		if err := app.seedDevelopmentAdmin(ctx, dir); err != nil {
 			t.Fatalf("expected a no-op, got %v", err)
 		}
 		if _, _, err := openStore(t, dir).Credentials(ctx, "admin@example.com"); !errors.Is(err, store.ErrNotFound) {
@@ -234,7 +187,7 @@ func TestSeedDevelopmentAdmin(t *testing.T) {
 		dir := newTestDB(t)
 		t.Setenv("ECV4_DEVELOPMENT_ADMIN_EMAIL", "")
 		t.Setenv("ECV4_DEVELOPMENT_ADMIN_SECRET", "")
-		if err := seedDevelopmentAdmin(ctx, "development", dir); err != nil {
+		if err := newTestApp().seedDevelopmentAdmin(ctx, dir); err != nil {
 			t.Fatalf("expected a no-op, got %v", err)
 		}
 	})
@@ -243,7 +196,7 @@ func TestSeedDevelopmentAdmin(t *testing.T) {
 		dir := newTestDB(t)
 		t.Setenv("ECV4_DEVELOPMENT_ADMIN_EMAIL", "admin@example.com")
 		t.Setenv("ECV4_DEVELOPMENT_ADMIN_SECRET", "adminsecret1")
-		if err := seedDevelopmentAdmin(ctx, "development", dir); err != nil {
+		if err := newTestApp().seedDevelopmentAdmin(ctx, dir); err != nil {
 			t.Fatalf("seedDevelopmentAdmin: %v", err)
 		}
 		acct, hash, err := openStore(t, dir).Credentials(ctx, "admin@example.com")
