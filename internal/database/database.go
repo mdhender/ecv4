@@ -121,6 +121,26 @@ func Create(ctx context.Context, dir string) (err error) {
 	return nil
 }
 
+// openPool builds a migrating pool for dsn with opts, then forces the initial
+// background migration to complete now — with a single Get/Put — so any error (a
+// failed migration, a mismatched application_id, or a database that is missing
+// or cannot be opened) surfaces here rather than from the caller's first query.
+// On failure it closes the pool and wraps the error with errPrefix.
+//
+// Open and CreateSharedMemory both build their pool through this, so the
+// migration-on-open behavior lives in one place; they differ only in the DSN,
+// the pool options, and errPrefix.
+func openPool(ctx context.Context, dsn string, opts sqlitemigration.Options, errPrefix string) (*sqlitemigration.Pool, error) {
+	pool := sqlitemigration.NewPool(dsn, schema(), opts)
+	conn, err := pool.Get(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("%s: %w", errPrefix, err)
+	}
+	pool.Put(conn)
+	return pool, nil
+}
+
 // Open opens the existing database named FileName inside dir, brings its schema
 // current by running any pending migrations, and returns a connection pool
 // together with a function that closes it.
@@ -177,25 +197,17 @@ func Open(ctx context.Context, dir string) (*sqlitemigration.Pool, func() error,
 		return nil, nil, fmt.Errorf("%q: is a directory, not a database file", dbPath)
 	}
 
-	pool := sqlitemigration.NewPool(dbPath, schema(), sqlitemigration.Options{
+	pool, err := openPool(ctx, dbPath, sqlitemigration.Options{
 		// Deliberately omit OpenCreate so the pool can never bring a database
 		// into existence; that is Create's job alone. OpenURI matches Create
 		// and permits file: URIs. PrepareConn enforces foreign keys on every
 		// pooled connection.
 		Flags:       sqlite.OpenReadWrite | sqlite.OpenWAL | sqlite.OpenURI,
 		PrepareConn: enableForeignKeys,
-	})
-
-	// Force the background migration to complete now so any error — a failed
-	// migration, a mismatched application_id, or a database that vanished
-	// between the stat above and here — surfaces from Open rather than from the
-	// caller's first query.
-	conn, err := pool.Get(ctx)
+	}, fmt.Sprintf("open %q", dbPath))
 	if err != nil {
-		pool.Close()
-		return nil, nil, fmt.Errorf("open %q: %w", dbPath, err)
+		return nil, nil, err
 	}
-	pool.Put(conn)
 
 	var once sync.Once
 	var closeErr error
@@ -252,23 +264,17 @@ func CreateSharedMemory(ctx context.Context, name string) (*sqlitemigration.Pool
 	}
 	uri := fmt.Sprintf("file:%s?mode=memory&cache=shared", name)
 
-	pool := sqlitemigration.NewPool(uri, schema(), sqlitemigration.Options{
+	pool, err := openPool(ctx, uri, sqlitemigration.Options{
 		// A shared in-memory database cannot use WAL, so set flags
 		// explicitly rather than taking the WAL-enabled default. OpenURI
 		// is required so the mode/cache query parameters are honored.
 		Flags: sqlite.OpenReadWrite | sqlite.OpenCreate | sqlite.OpenURI,
 		// Enforce foreign keys on every pooled connection.
 		PrepareConn: enableForeignKeys,
-	})
-
-	// Force the background migration to complete now so any error surfaces
-	// from this call rather than from the caller's first query.
-	conn, err := pool.Get(ctx)
+	}, fmt.Sprintf("migrate shared in-memory database %q", name))
 	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("migrate shared in-memory database %q: %w", name, err)
+		return nil, err
 	}
-	pool.Put(conn)
 
 	return pool, nil
 }
