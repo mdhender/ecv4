@@ -183,6 +183,49 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /me/sessions:
+    get:
+      tags: [Me]
+      operationId: listMySessions
+      summary: List the authenticated user's active sessions
+      description: |
+        Returns the caller's active sessions — the refresh-token families that are
+        neither revoked nor expired — each with metadata useful for recognizing a
+        session (its family id, when its current token was issued, and when it
+        expires). Raw tokens are never returned. Scoped to the caller
+        (self-service); no admin role is required. Pairs with DELETE
+        /me/sessions/{familyId} to revoke one and POST /auth/logout to end the
+        current session or every session.
+      responses:
+        '200':
+          description: The caller's active sessions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMySessionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /me/sessions/{familyId}:
+    parameters:
+      - $ref: '#/components/parameters/FamilyId'
+    delete:
+      tags: [Me]
+      operationId: revokeMySession
+      summary: Revoke one of the authenticated user's sessions
+      description: |
+        Revokes a single session (refresh-token family) belonging to the caller,
+        identified by its family id, so the "log out this device" counterpart to
+        POST /auth/logout. Object-level check: only the caller's own families are
+        revocable — an unknown family, or one owned by another account, yields 404
+        rather than revealing its existence. Idempotent while the family's records
+        persist: revoking an already-revoked family still returns 204.
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /accounts:
     get:
       tags: [Accounts]
@@ -567,6 +610,14 @@ components:
         type: integer
         format: int64
         minimum: 1
+    FamilyId:
+      name: familyId
+      in: path
+      required: true
+      description: Session (refresh-token family) identifier.
+      schema:
+        type: string
+        minLength: 1
   responses:
     BadRequest:
       description: Invalid request
@@ -851,6 +902,33 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MyGame'
+    Session:
+      type: object
+      description: |
+        An active session for the authenticated user: a refresh-token family that
+        is neither revoked nor expired. The raw tokens are never included.
+      required: [familyId, issuedAt, expiresAt]
+      properties:
+        familyId:
+          type: string
+          description: Stable identifier for the session (the refresh-token family id).
+          example: 3f1a9c0b7d2e4f5a6b8c9d0e1f2a3b4c
+        issuedAt:
+          type: string
+          format: date-time
+          description: When the session's current refresh token was issued.
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the session's current refresh token expires.
+    ListMySessionsResponse:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
     ListAccountsResponse:
       type: object
       required: [accounts]

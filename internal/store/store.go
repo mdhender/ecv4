@@ -271,6 +271,81 @@ func (s *Store) RevokeAllForAccount(ctx context.Context, accountID int64) error 
 	return s.revoke(ctx, "account_id = ?", accountID, "revoke account refresh tokens")
 }
 
+// RevokeFamilyForAccount marks every token in familyID revoked, but only if the
+// family belongs to accountID. It returns ErrNotFound when no row for that family
+// is owned by the account (the family is unknown, or belongs to someone else), so
+// callers can 404 without revealing another account's session. Revoking a family
+// the account owns is idempotent, returning nil even if it was already revoked.
+//
+// ctx bounds acquiring the connection and running the update.
+func (s *Store) RevokeFamilyForAccount(ctx context.Context, familyID string, accountID int64) error {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return fmt.Errorf("revoke family for account: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	if err := sqlitex.Execute(conn,
+		"UPDATE refresh_tokens SET revoked = 1 WHERE family_id = ? AND account_id = ?;",
+		&sqlitex.ExecOptions{Args: []any{familyID, accountID}}); err != nil {
+		return fmt.Errorf("revoke family %q for account %d: %w", familyID, accountID, err)
+	}
+	// SQLite counts every row matched by the WHERE clause as changed, even when
+	// revoked was already 1, so zero changes means the account owns no such family.
+	if conn.Changes() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Session is one active refresh-token family for an account: the family id plus
+// the issue and expiry times of the family's current token. It carries no token
+// material, only enough to recognize and revoke a session.
+type Session struct {
+	FamilyID  string
+	IssuedAt  int64
+	ExpiresAt int64
+}
+
+// SessionsForAccount returns the account's active sessions: one Session per
+// refresh-token family that still has a token that is neither revoked nor expired
+// as of now (unix seconds). Within a family the current token has the greatest
+// issued_at/expires_at (rotation revokes the old and mints a newer one), so those
+// maxima describe the live token. Sessions are ordered newest-first by issue time.
+// An account with no live sessions yields an empty slice, not an error.
+//
+// ctx bounds acquiring the connection and running the query.
+func (s *Store) SessionsForAccount(ctx context.Context, accountID, now int64) ([]Session, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sessions for account: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	sessions := []Session{}
+	err = sqlitex.Execute(conn,
+		`SELECT family_id, MAX(issued_at), MAX(expires_at)
+			FROM refresh_tokens
+			WHERE account_id = ? AND revoked = 0 AND expires_at > ?
+			GROUP BY family_id
+			ORDER BY MAX(issued_at) DESC, family_id;`,
+		&sqlitex.ExecOptions{
+			Args: []any{accountID, now},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				sessions = append(sessions, Session{
+					FamilyID:  stmt.ColumnText(0),
+					IssuedAt:  stmt.ColumnInt64(1),
+					ExpiresAt: stmt.ColumnInt64(2),
+				})
+				return nil
+			},
+		})
+	if err != nil {
+		return nil, fmt.Errorf("sessions for account %d: %w", accountID, err)
+	}
+	return sessions, nil
+}
+
 // revoke sets revoked = 1 on every refresh_tokens row matching whereCol against
 // arg. It is the shared body of the three Revoke* methods; op labels errors.
 func (s *Store) revoke(ctx context.Context, whereCol string, arg any, op string) error {
