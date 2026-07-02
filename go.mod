@@ -6,7 +6,7 @@ require (
 	github.com/getkin/kin-openapi v0.140.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/joho/godotenv v1.5.1
-	github.com/maloquacious/semver v0.4.0
+	github.com/maloquacious/semver v0.4.1
 	github.com/oapi-codegen/runtime v1.4.2
 	github.com/peterbourgon/ff/v4 v4.0.0-beta.1
 	golang.org/x/crypto v0.53.0
