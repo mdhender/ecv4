@@ -73,7 +73,13 @@ func (s *Server) Login(ctx context.Context, request api.LoginRequestObject) (api
 	if err != nil {
 		return nil, err
 	}
-	refreshToken, _, err := s.tokens.IssueRefresh(account.ID)
+	// A login starts a fresh session family; its refresh token is persisted so
+	// it can later be rotated and revoked.
+	family, err := auth.NewTokenID()
+	if err != nil {
+		return nil, err
+	}
+	refreshToken, err := s.issueRefresh(ctx, account.ID, family)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +90,28 @@ func (s *Server) Login(ctx context.Context, request api.LoginRequestObject) (api
 		TokenType:        api.Bearer,
 		ExpiresInSeconds: int(s.tokens.AccessTTL().Seconds()),
 	}, nil
+}
+
+// issueRefresh mints a refresh token in family (generating a fresh jti),
+// persists it as un-revoked, and returns the signed token. Login and
+// RefreshToken share it: login passes a new family, rotation reuses the
+// presented token's family.
+func (s *Server) issueRefresh(ctx context.Context, accountID int64, family string) (string, error) {
+	jti, err := auth.NewTokenID()
+	if err != nil {
+		return "", err
+	}
+	token, exp, err := s.tokens.IssueRefresh(accountID, jti, family)
+	if err != nil {
+		return "", err
+	}
+	// exp - refreshTTL is the issue time (IssueRefresh computes exp = now +
+	// refreshTTL from the same clock), so this stays correct under WithClock.
+	issuedAt := exp.Add(-s.tokens.RefreshTTL())
+	if err := s.store.CreateRefreshToken(ctx, jti, family, accountID, issuedAt.Unix(), exp.Unix()); err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func (s *Server) RefreshToken(ctx context.Context, request api.RefreshTokenRequestObject) (api.RefreshTokenResponseObject, error) {

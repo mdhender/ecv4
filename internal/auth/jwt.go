@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"time"
@@ -51,12 +53,17 @@ func NewTokenService(secret []byte, accessTTL, refreshTTL time.Duration, opts ..
 // AccessTTL is the configured access-token lifetime.
 func (ts *TokenService) AccessTTL() time.Duration { return ts.accessTTL }
 
+// RefreshTTL is the configured refresh-token lifetime.
+func (ts *TokenService) RefreshTTL() time.Duration { return ts.refreshTTL }
+
 // tokenClaims is the JWT payload for both token kinds. Username and Roles are
-// present only on access tokens.
+// present only on access tokens; Family only on refresh tokens (the jti lives
+// in RegisteredClaims.ID).
 type tokenClaims struct {
 	jwt.RegisteredClaims
 	Username string   `json:"username,omitempty"`
 	Roles    []string `json:"roles,omitempty"`
+	Family   string   `json:"family,omitempty"`
 }
 
 // IssueAccess returns a signed access token for the account and its expiry time.
@@ -73,10 +80,16 @@ func (ts *TokenService) IssueAccess(accountID int64, username string, roles []st
 }
 
 // IssueRefresh returns a signed refresh token for the account and its expiry.
-func (ts *TokenService) IssueRefresh(accountID int64) (string, time.Time, error) {
+// jti is the token's unique id (its RegisteredClaims.ID) and family groups
+// tokens rotated from one login; both are supplied by the caller (generated
+// with NewTokenID) so they can be persisted for revocation and injected in
+// tests.
+func (ts *TokenService) IssueRefresh(accountID int64, jti, family string) (string, time.Time, error) {
 	now := ts.now()
 	exp := now.Add(ts.refreshTTL)
-	claims := tokenClaims{RegisteredClaims: ts.registered(accountID, refreshAudience, now, exp)}
+	registered := ts.registered(accountID, refreshAudience, now, exp)
+	registered.ID = jti
+	claims := tokenClaims{RegisteredClaims: registered, Family: family}
 	signed, err := ts.sign(claims)
 	return signed, exp, err
 }
@@ -91,6 +104,18 @@ func (ts *TokenService) registered(accountID int64, audience string, now, exp ti
 	}
 }
 
+// NewTokenID returns a random 128-bit identifier as a 32-character hex string,
+// used for refresh-token jti and family ids. The value is only an identifier,
+// not a secret — the JWT signature is what makes a token unforgeable — so a
+// collision-resistant random id is sufficient.
+func NewTokenID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("generate token id: %w", err)
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
 func (ts *TokenService) sign(claims tokenClaims) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(ts.secret)
@@ -100,10 +125,11 @@ func (ts *TokenService) sign(claims tokenClaims) (string, error) {
 	return signed, nil
 }
 
-// Verify parses and validates an access token and returns the application
-// Claims. It enforces the HS256 method, the ecv4 issuer, the access-token
-// audience (so a refresh token is rejected), and expiry. It implements Verifier.
-func (ts *TokenService) Verify(raw string) (Claims, error) {
+// parse validates a signed token against the HS256 method, the ecv4 issuer, the
+// given audience, and expiry, returning its raw claims. It is the shared body of
+// Verify and VerifyRefresh; the audience is what keeps the two token kinds
+// distinct (an access token cannot pass as a refresh token, or vice versa).
+func (ts *TokenService) parse(raw, audience string) (tokenClaims, error) {
 	var claims tokenClaims
 	_, err := jwt.ParseWithClaims(raw, &claims,
 		func(token *jwt.Token) (any, error) {
@@ -114,9 +140,17 @@ func (ts *TokenService) Verify(raw string) (Claims, error) {
 		},
 		jwt.WithValidMethods([]string{"HS256"}),
 		jwt.WithIssuer(tokenIssuer),
-		jwt.WithAudience(accessAudience),
+		jwt.WithAudience(audience),
 		jwt.WithTimeFunc(ts.now),
 	)
+	return claims, err
+}
+
+// Verify parses and validates an access token and returns the application
+// Claims. It enforces the HS256 method, the ecv4 issuer, the access-token
+// audience (so a refresh token is rejected), and expiry. It implements Verifier.
+func (ts *TokenService) Verify(raw string) (Claims, error) {
+	claims, err := ts.parse(raw, accessAudience)
 	if err != nil {
 		return Claims{}, fmt.Errorf("verify token: %w", err)
 	}
@@ -135,6 +169,34 @@ func (ts *TokenService) Verify(raw string) (Claims, error) {
 		UserID:    accountID,
 		Username:  claims.Username,
 		Roles:     claims.Roles,
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+// VerifyRefresh parses and validates a refresh token and returns its
+// RefreshClaims. It mirrors Verify but enforces the refresh-token audience, so
+// an access token is rejected. The returned jti and family let the caller look
+// the token up for rotation and revocation.
+func (ts *TokenService) VerifyRefresh(raw string) (RefreshClaims, error) {
+	claims, err := ts.parse(raw, refreshAudience)
+	if err != nil {
+		return RefreshClaims{}, fmt.Errorf("verify refresh token: %w", err)
+	}
+
+	accountID, err := strconv.ParseInt(claims.Subject, 10, 64)
+	if err != nil {
+		return RefreshClaims{}, fmt.Errorf("verify refresh token: invalid subject %q: %w", claims.Subject, err)
+	}
+
+	var expiresAt time.Time
+	if claims.ExpiresAt != nil {
+		expiresAt = claims.ExpiresAt.Time
+	}
+	return RefreshClaims{
+		Subject:   claims.Subject,
+		UserID:    accountID,
+		JTI:       claims.ID,
+		Family:    claims.Family,
 		ExpiresAt: expiresAt,
 	}, nil
 }

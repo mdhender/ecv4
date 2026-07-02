@@ -13,6 +13,17 @@ type Claims struct {
 	ExpiresAt time.Time
 }
 
+// RefreshClaims is the identity extracted from a verified refresh token: the
+// account plus the token's own id (jti) and its session family, which the
+// refresh/logout handlers use to rotate and revoke tokens.
+type RefreshClaims struct {
+	Subject   string
+	UserID    int64
+	JTI       string
+	Family    string
+	ExpiresAt time.Time
+}
+
 func (c Claims) HasRole(role string) bool {
 	for _, candidate := range c.Roles {
 		if candidate == role {

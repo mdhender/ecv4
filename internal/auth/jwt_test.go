@@ -53,7 +53,7 @@ func TestVerifyRejectsWrongSecret(t *testing.T) {
 
 func TestVerifyRejectsRefreshTokenAsAccess(t *testing.T) {
 	ts := NewTokenService(testSecret, time.Minute, time.Hour)
-	refresh, _, err := ts.IssueRefresh(1)
+	refresh, _, err := ts.IssueRefresh(1, "jti-1", "fam-1")
 	if err != nil {
 		t.Fatalf("IssueRefresh: %v", err)
 	}
@@ -61,6 +61,71 @@ func TestVerifyRejectsRefreshTokenAsAccess(t *testing.T) {
 	// access token.
 	if _, err := ts.Verify(refresh); err == nil {
 		t.Fatal("expected refresh token to be rejected by access-token Verify")
+	}
+}
+
+func TestVerifyRefreshRoundTrip(t *testing.T) {
+	ts := NewTokenService(testSecret, time.Minute, time.Hour)
+	refresh, exp, err := ts.IssueRefresh(42, "jti-abc", "fam-xyz")
+	if err != nil {
+		t.Fatalf("IssueRefresh: %v", err)
+	}
+	if !exp.After(time.Now()) {
+		t.Fatalf("expiry %v is not in the future", exp)
+	}
+
+	claims, err := ts.VerifyRefresh(refresh)
+	if err != nil {
+		t.Fatalf("VerifyRefresh: %v", err)
+	}
+	if claims.UserID != 42 {
+		t.Fatalf("UserID = %d, want 42", claims.UserID)
+	}
+	if claims.JTI != "jti-abc" || claims.Family != "fam-xyz" {
+		t.Fatalf("jti/family = %q/%q, want jti-abc/fam-xyz", claims.JTI, claims.Family)
+	}
+}
+
+func TestVerifyRefreshRejectsAccessToken(t *testing.T) {
+	ts := NewTokenService(testSecret, time.Minute, time.Hour)
+	access, _, err := ts.IssueAccess(1, "a@b.com", nil)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	// An access token carries the access audience and must not verify as a
+	// refresh token.
+	if _, err := ts.VerifyRefresh(access); err == nil {
+		t.Fatal("expected access token to be rejected by VerifyRefresh")
+	}
+}
+
+func TestVerifyRefreshRejectsExpiredToken(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := base
+	ts := NewTokenService(testSecret, time.Minute, time.Hour, WithClock(func() time.Time { return clock }))
+
+	refresh, _, _ := ts.IssueRefresh(1, "jti", "fam")
+
+	clock = base.Add(2 * time.Hour) // past the 1-hour refresh TTL
+	if _, err := ts.VerifyRefresh(refresh); err == nil {
+		t.Fatal("expected expired refresh token to be rejected")
+	}
+}
+
+func TestNewTokenIDUnique(t *testing.T) {
+	a, err := NewTokenID()
+	if err != nil {
+		t.Fatalf("NewTokenID: %v", err)
+	}
+	b, err := NewTokenID()
+	if err != nil {
+		t.Fatalf("NewTokenID: %v", err)
+	}
+	if a == b {
+		t.Fatal("NewTokenID returned the same id twice")
+	}
+	if len(a) != 32 {
+		t.Fatalf("token id length = %d, want 32", len(a))
 	}
 }
 
