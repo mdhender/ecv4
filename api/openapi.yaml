@@ -528,9 +528,10 @@ paths:
           - isGm: only true (promote a player to GM). Admin or an active GM,
             recruiting only (an admin bypasses that window). Demotion is not
             supported.
-          - handle: the member themselves may rename in recruiting only, and the
-            new handle may not begin with 'player_'; an admin may rename in any
-            non-archived status. A duplicate handle is a 409.
+          - handle: an active GM or an admin may rename any member in any
+            non-archived status; a plain player may rename only themselves, only
+            while recruiting, and not to a 'player_' handle. A duplicate handle is
+            a 409.
         An archived game is frozen: no update is accepted.
       requestBody:
         required: true

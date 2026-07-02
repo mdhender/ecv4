@@ -178,15 +178,27 @@ func TestUpdateMemberRenameDuplicateIs409(t *testing.T) {
 	}
 }
 
-func TestUpdateMemberGMCannotRenameOtherMember(t *testing.T) {
+func TestUpdateMemberGMRenamesOtherMember(t *testing.T) {
+	st, pool := updateMemberWorld(t)
+	seedRoster(t, pool, "active") // a GM manages the roster in any non-archived status
+	// A GM may rename another member, and outside recruiting; 'player_' is allowed.
+	m := upd200(t, callUpdateGameMember(t, st, auth.Claims{UserID: 2}, true, 10, 3, &api.UpdateMemberRequest{
+		Handle: strptr("player_7"),
+	}))
+	if m.AccountId != 3 || m.Handle != "player_7" {
+		t.Fatalf("member = %+v, want account 3 handle player_7", m)
+	}
+}
+
+func TestUpdateMemberPlayerCannotRenameOtherMember(t *testing.T) {
 	st, pool := updateMemberWorld(t)
 	seedRoster(t, pool, "recruiting")
-	// A GM renaming another member's handle is out of scope (403); only the member
-	// or an admin may.
-	if _, is := callUpdateGameMember(t, st, auth.Claims{UserID: 2}, true, 10, 3, &api.UpdateMemberRequest{
+	// A plain player renaming a different member is forbidden; only the member, a
+	// GM, or an admin may. Account 3 (player) targets account 4.
+	if _, is := callUpdateGameMember(t, st, auth.Claims{UserID: 3}, true, 10, 4, &api.UpdateMemberRequest{
 		Handle: strptr("Carthage"),
 	}).(api.UpdateGameMember403JSONResponse); !is {
-		t.Fatal("expected 403 for a GM renaming another member")
+		t.Fatal("expected 403 for a plain player renaming another member")
 	}
 }
 

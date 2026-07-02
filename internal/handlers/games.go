@@ -352,9 +352,10 @@ func (s *Server) UpdateGameMember(ctx context.Context, request api.UpdateGameMem
 		}
 	}
 
-	// handle: the member themselves may rename (recruiting only, and not to a
-	// 'player_' handle); an admin may rename in any non-archived status. A GM may
-	// not rename another member here.
+	// handle: an active GM or an admin manages the roster and may rename any member
+	// in any non-archived status (the 'player_' prefix is a GM/admin concern, so it
+	// is allowed). A plain player may rename only themselves, only while recruiting,
+	// and not to a 'player_' handle.
 	if body.Handle != nil {
 		handle := strings.TrimSpace(*body.Handle)
 		if !memberHandlePattern.MatchString(handle) {
@@ -362,9 +363,8 @@ func (s *Server) UpdateGameMember(ctx context.Context, request api.UpdateGameMem
 		}
 		if handle != target.Handle { // an actual rename
 			switch {
-			case account.IsAdmin:
-				// Allowed in any non-archived status; the 'player_' prefix is reserved
-				// against players, not admins.
+			case activeGM:
+				// admin or active GM: any non-archived status, 'player_' permitted.
 			case isSelf:
 				if !recruiting {
 					return updateMemberForbidden("a handle can only be changed while the game is recruiting"), nil
@@ -373,7 +373,7 @@ func (s *Server) UpdateGameMember(ctx context.Context, request api.UpdateGameMem
 					return updateMemberBadRequest("a handle may not begin with 'player_'"), nil
 				}
 			default:
-				return updateMemberForbidden("only the member or an admin may change a handle"), nil
+				return updateMemberForbidden("only the member, a game master, or an admin may change a handle"), nil
 			}
 			upd.Handle = &handle
 		}
