@@ -322,6 +322,53 @@ func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api
 	}, nil
 }
 
+func (s *Server) ListMyGames(ctx context.Context, request api.ListMyGamesRequestObject) (api.ListMyGamesResponseObject, error) {
+	// Secured route: the bearer-auth middleware puts verified claims in the
+	// context; their absence means the request reached here unauthenticated.
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return myGamesUnauthorized("missing credentials"), nil
+	}
+
+	// Re-read fresh account state rather than trusting the token, like the other
+	// /me handlers: an account may have been deactivated or removed since the
+	// token was issued.
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return myGamesUnauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return myGamesUnauthorized("account is not active"), nil
+	}
+
+	memberships, err := s.store.GamesForAccount(ctx, account.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	games := make([]api.MyGame, len(memberships))
+	for i, m := range memberships {
+		games[i] = api.MyGame{
+			Id:       m.GameID,
+			Code:     m.Code,
+			IsActive: m.IsActive,
+			Handle:   m.Handle,
+			IsGm:     m.IsGM,
+		}
+	}
+	return api.ListMyGames200JSONResponse{Games: games}, nil
+}
+
+// myGamesUnauthorized builds the 401 response for ListMyGames.
+func myGamesUnauthorized(message string) api.ListMyGames401JSONResponse {
+	return api.ListMyGames401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code:    "unauthorized",
+		Message: message,
+	}}
+}
+
 // accountRoles maps an account to its global roles. The accounts table carries
 // only the admin flag; game-scoped GM/player roles live in game_account_role
 // and surface on game endpoints, not in the global user context.
