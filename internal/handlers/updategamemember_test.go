@@ -75,16 +75,7 @@ func TestUpdateMemberGMReactivatesInActive(t *testing.T) {
 	}
 }
 
-func TestUpdateMemberDeactivateIsRejected(t *testing.T) {
-	st, pool := updateMemberWorld(t)
-	seedRoster(t, pool, "active")
-	// Dropping (isActive:false) is a separate operation; rejected here as a 400.
-	if _, is := callUpdateGameMember(t, st, auth.Claims{UserID: 2}, true, 10, 3, &api.UpdateMemberRequest{
-		IsActive: boolptr(false),
-	}).(api.UpdateGameMember400JSONResponse); !is {
-		t.Fatal("expected 400 for isActive:false (deactivation not supported here)")
-	}
-}
+// Drop / self-deactivate (isActive:false) behavior lives in dropmember_test.go.
 
 // --- promote ---
 
