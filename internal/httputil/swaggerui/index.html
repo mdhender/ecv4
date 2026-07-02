@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ecv4 API — reference</title>
+    <!-- Assets are served from the same embedded directory as this page, so
+         relative paths resolve under /docs/. The spec is an absolute path so it
+         resolves regardless of the /docs/ prefix. -->
+    <link rel="stylesheet" href="swagger-ui.css" />
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="swagger-ui-bundle.js"></script>
+    <script>
+      window.onload = function () {
+        window.ui = SwaggerUIBundle({
+          url: "/openapi.yaml",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+        });
+      };
+    </script>
+  </body>
+</html>
