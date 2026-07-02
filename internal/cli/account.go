@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/mdhender/ecv4/internal/auth"
@@ -78,6 +79,42 @@ func (a *App) createAccount(ctx context.Context, dbDir, email, secret string, se
 	}
 	if !isActive {
 		fmt.Fprintln(a.Stdout, "note: account is inactive and cannot log in (created with --is-inactive)")
+	}
+	return nil
+}
+
+// listAccounts opens the database in dbDir read-only-in-spirit (no mutation) and
+// prints every account in a columnar table: id, is_active, is_admin, email. It
+// is an operator/recovery tool — inspect who is admin, or recover from an admin
+// lockout, without a running server or a token. Hashed secrets are never loaded.
+func (a *App) listAccounts(ctx context.Context, dbDir string) error {
+	pool, closeDB, err := database.Open(ctx, dbDir)
+	if err != nil {
+		return err
+	}
+	defer closeDB()
+
+	accounts, err := store.New(pool).ListAccounts(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(accounts) == 0 {
+		fmt.Fprintln(a.Stdout, "no accounts")
+		return nil
+	}
+
+	// Right-align the id column to the widest id so the table stays aligned.
+	idWidth := len("ID")
+	for _, acc := range accounts {
+		if w := len(strconv.FormatInt(acc.ID, 10)); w > idWidth {
+			idWidth = w
+		}
+	}
+
+	fmt.Fprintf(a.Stdout, "%*s  %-8s  %-8s  %s\n", idWidth, "ID", "ACTIVE", "ADMIN", "EMAIL")
+	for _, acc := range accounts {
+		fmt.Fprintf(a.Stdout, "%*d  %-8t  %-8t  %s\n", idWidth, acc.ID, acc.IsActive, acc.IsAdmin, acc.Email)
 	}
 	return nil
 }
