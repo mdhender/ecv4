@@ -249,6 +249,192 @@ func addMemberConflict(message string) api.AddGameMember409JSONResponse {
 	}}
 }
 
+// UpdateGameMember applies a partial update to an existing membership:
+// reactivate a dropped member (isActive:true), promote a player to GM
+// (isGm:true), or change a handle. Each field carries its own rule from the
+// action matrix, enforced per-field so a request changing several fields must
+// satisfy every rule. Only fields that represent an actual change are applied and
+// authorized, so a redundant no-op is accepted without a spurious 403. An
+// archived game rejects every update (admins included).
+func (s *Server) UpdateGameMember(ctx context.Context, request api.UpdateGameMemberRequestObject) (api.UpdateGameMemberResponseObject, error) {
+	claims, ok := auth.ClaimsFromContext(ctx)
+	if !ok {
+		return updateMemberUnauthorized("missing credentials"), nil
+	}
+
+	account, err := s.store.AccountByID(ctx, claims.UserID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return updateMemberUnauthorized("account no longer exists"), nil
+	case err != nil:
+		return nil, err
+	case !account.IsActive:
+		return updateMemberUnauthorized("account is not active"), nil
+	}
+
+	if request.Body == nil {
+		return updateMemberBadRequest("request body is required"), nil
+	}
+	body := request.Body
+	if body.IsActive == nil && body.IsGm == nil && body.Handle == nil {
+		return updateMemberBadRequest("no changes requested"), nil
+	}
+
+	// Visibility gate, shared with GetGame: unknown or not-visible game → 404.
+	game, err := s.store.GameByID(ctx, request.GameId, account.ID, account.IsAdmin)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return updateMemberNotFound("game not found"), nil
+	case err != nil:
+		return nil, err
+	}
+
+	// The target membership must exist; a non-member cannot be updated (add first).
+	target, err := s.store.MemberForGame(ctx, request.GameId, request.AccountId)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return updateMemberNotFound("member not found"), nil
+	case err != nil:
+		return nil, err
+	}
+
+	// Archived freezes every membership update, admins included. The only archived
+	// exception — changing status out of archived — is a lifecycle action, not this
+	// endpoint.
+	if game.Status == string(api.Archived) {
+		return updateMemberForbidden("the game is archived and cannot be modified"), nil
+	}
+
+	// The caller's standing: an admin bypasses the GM requirement; a non-admin's
+	// role comes from their own membership, which GameByID guarantees exists.
+	isSelf := account.ID == request.AccountId
+	activeGM := account.IsAdmin
+	if !account.IsAdmin {
+		caller, err := s.store.MemberForGame(ctx, request.GameId, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		activeGM = caller.IsActive && caller.IsGM
+	}
+	recruiting := game.Status == string(api.Recruiting)
+
+	var upd store.MemberUpdate
+
+	// isActive: reactivate only. Deactivation (dropping a member) is a separate
+	// operation and is rejected here.
+	if body.IsActive != nil {
+		if !*body.IsActive {
+			return updateMemberBadRequest("deactivating a member is not supported here"), nil
+		}
+		if !target.IsActive { // an actual reactivation
+			if !(account.IsAdmin || activeGM) {
+				return updateMemberForbidden("only an active game master or an admin may reactivate a member"), nil
+			}
+			v := true
+			upd.IsActive = &v
+		}
+	}
+
+	// isGm: promote only. Demotion (GM→player) is out of scope and always rejected.
+	if body.IsGm != nil {
+		if !*body.IsGm {
+			return updateMemberForbidden("demoting a game master is not supported"), nil
+		}
+		if !target.IsGM { // an actual promotion
+			if !(account.IsAdmin || activeGM) {
+				return updateMemberForbidden("only an active game master or an admin may promote a member"), nil
+			}
+			if !account.IsAdmin && !recruiting {
+				return updateMemberForbidden("players can only be promoted while the game is recruiting"), nil
+			}
+			v := true
+			upd.IsGM = &v
+		}
+	}
+
+	// handle: an active GM or an admin manages the roster and may rename any member
+	// in any non-archived status (the 'player_' prefix is a GM/admin concern, so it
+	// is allowed). A plain player may rename only themselves, only while recruiting,
+	// and not to a 'player_' handle.
+	if body.Handle != nil {
+		handle := strings.TrimSpace(*body.Handle)
+		if !memberHandlePattern.MatchString(handle) {
+			return updateMemberBadRequest("handle must be two or more characters, start with a letter, and use only letters, digits, '.', '_' or '-'"), nil
+		}
+		if handle != target.Handle { // an actual rename
+			switch {
+			case activeGM:
+				// admin or active GM: any non-archived status, 'player_' permitted.
+			case isSelf:
+				if !recruiting {
+					return updateMemberForbidden("a handle can only be changed while the game is recruiting"), nil
+				}
+				if strings.HasPrefix(handle, "player_") {
+					return updateMemberBadRequest("a handle may not begin with 'player_'"), nil
+				}
+			default:
+				return updateMemberForbidden("only the member, a game master, or an admin may change a handle"), nil
+			}
+			upd.Handle = &handle
+		}
+	}
+
+	// Every requested field may already match the target's state; a pure no-op
+	// returns the member unchanged rather than touching the store.
+	if upd.IsActive == nil && upd.IsGM == nil && upd.Handle == nil {
+		return api.UpdateGameMember200JSONResponse(apiMember(target)), nil
+	}
+
+	member, err := s.store.UpdateMember(ctx, request.GameId, request.AccountId, upd)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return updateMemberNotFound("member not found"), nil
+	case errors.Is(err, store.ErrHandleTaken):
+		return updateMemberConflict("handle already in use"), nil
+	case errors.Is(err, store.ErrConflict):
+		return updateMemberConflict("member could not be updated due to a conflict"), nil
+	case err != nil:
+		return nil, err
+	}
+
+	return api.UpdateGameMember200JSONResponse(apiMember(member)), nil
+}
+
+// updateMemberUnauthorized builds the 401 response for UpdateGameMember.
+func updateMemberUnauthorized(message string) api.UpdateGameMember401JSONResponse {
+	return api.UpdateGameMember401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
+		Code: "unauthorized", Message: message,
+	}}
+}
+
+// updateMemberBadRequest builds the 400 response for UpdateGameMember.
+func updateMemberBadRequest(message string) api.UpdateGameMember400JSONResponse {
+	return api.UpdateGameMember400JSONResponse{BadRequestJSONResponse: api.BadRequestJSONResponse{
+		Code: "bad_request", Message: message,
+	}}
+}
+
+// updateMemberForbidden builds the 403 response for UpdateGameMember.
+func updateMemberForbidden(message string) api.UpdateGameMember403JSONResponse {
+	return api.UpdateGameMember403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
+		Code: "forbidden", Message: message,
+	}}
+}
+
+// updateMemberNotFound builds the 404 response for UpdateGameMember.
+func updateMemberNotFound(message string) api.UpdateGameMember404JSONResponse {
+	return api.UpdateGameMember404JSONResponse{NotFoundJSONResponse: api.NotFoundJSONResponse{
+		Code: "not_found", Message: message,
+	}}
+}
+
+// updateMemberConflict builds the 409 response for UpdateGameMember.
+func updateMemberConflict(message string) api.UpdateGameMember409JSONResponse {
+	return api.UpdateGameMember409JSONResponse{ConflictJSONResponse: api.ConflictJSONResponse{
+		Code: "conflict", Message: message,
+	}}
+}
+
 // apiMember maps a store roster member to its API representation.
 func apiMember(m store.Member) api.Member {
 	return api.Member{

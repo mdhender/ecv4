@@ -876,6 +876,123 @@ func (s *Store) AddMember(ctx context.Context, gameID, accountID int64, handle s
 	return Member{AccountID: accountID, Handle: handle, IsGM: isGM, IsActive: true}, nil
 }
 
+// MemberUpdate describes a partial update to a game membership. A nil field is
+// left unchanged; a non-nil field is written. The store applies exactly what it
+// is given — the role/status rules (reactivate-only, promote-only, self-rename)
+// are enforced by the handler before calling.
+type MemberUpdate struct {
+	IsActive *bool
+	IsGM     *bool
+	Handle   *string
+}
+
+// empty reports whether the update requests no changes.
+func (u MemberUpdate) empty() bool {
+	return u.IsActive == nil && u.IsGM == nil && u.Handle == nil
+}
+
+// buildMemberUpdate turns upd into the SET-clause fragments and their arguments
+// for a game_account_role UPDATE. Only the fields set in upd are included.
+func buildMemberUpdate(upd MemberUpdate) (sets []string, args []any) {
+	if upd.IsActive != nil {
+		sets = append(sets, "is_active = ?")
+		args = append(args, boolToInt(*upd.IsActive))
+	}
+	if upd.IsGM != nil {
+		sets = append(sets, "is_gm = ?")
+		args = append(args, boolToInt(*upd.IsGM))
+	}
+	if upd.Handle != nil {
+		sets = append(sets, "handle = ?")
+		args = append(args, *upd.Handle)
+	}
+	return sets, args
+}
+
+// UpdateMember applies upd to the account's membership in the game and returns the
+// updated Member. The current-row read, handle-uniqueness check, and update run in
+// one transaction. It returns ErrNotFound if the account has no membership row in
+// the game, an error if upd requests no changes, and ErrHandleTaken if a new
+// handle is already used by another member of the game.
+//
+// It enforces no role or status rules; the handler authorizes the change first.
+// ctx bounds the whole operation.
+func (s *Store) UpdateMember(ctx context.Context, gameID, accountID int64, upd MemberUpdate) (member Member, err error) {
+	if upd.empty() {
+		return Member{}, fmt.Errorf("update member %d in game %d: no changes requested", accountID, gameID)
+	}
+
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Member{}, fmt.Errorf("update member: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	endTx, err := sqlitex.ImmediateTransaction(conn)
+	if err != nil {
+		return Member{}, fmt.Errorf("update member: %w", err)
+	}
+	defer endTx(&err)
+
+	// Load the current row so we can return the merged result and reject an unknown
+	// member with a clean ErrNotFound.
+	current := Member{AccountID: accountID}
+	found := false
+	if e := sqlitex.Execute(conn,
+		"SELECT handle, is_gm, is_active FROM game_account_role WHERE game_id = ? AND account_id = ?;",
+		&sqlitex.ExecOptions{
+			Args: []any{gameID, accountID},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				found = true
+				current.Handle = stmt.ColumnText(0)
+				current.IsGM = stmt.ColumnInt(1) != 0
+				current.IsActive = stmt.ColumnInt(2) != 0
+				return nil
+			},
+		}); e != nil {
+		return Member{}, fmt.Errorf("update member %d in game %d: %w", accountID, gameID, e)
+	}
+	if !found {
+		return Member{}, ErrNotFound
+	}
+
+	// A handle change must stay unique within the game; check it explicitly so a
+	// collision is a clean ErrHandleTaken rather than a raw UNIQUE failure. Another
+	// row (not this account) already holding the handle is the conflict.
+	if upd.Handle != nil && *upd.Handle != current.Handle {
+		if ok, e := existsInt(conn,
+			"SELECT 1 FROM game_account_role WHERE game_id = ? AND handle = ? AND account_id <> ?;",
+			gameID, *upd.Handle, accountID); e != nil {
+			return Member{}, fmt.Errorf("update member %d in game %d: %w", accountID, gameID, e)
+		} else if ok {
+			return Member{}, ErrHandleTaken
+		}
+	}
+
+	sets, args := buildMemberUpdate(upd)
+	args = append(args, gameID, accountID)
+	if e := sqlitex.Execute(conn,
+		"UPDATE game_account_role SET "+strings.Join(sets, ", ")+" WHERE game_id = ? AND account_id = ?;",
+		&sqlitex.ExecOptions{Args: args}); e != nil {
+		if sqlite.ErrCode(e) == sqlite.ResultConstraintUnique {
+			return Member{}, ErrHandleTaken
+		}
+		return Member{}, fmt.Errorf("update member %d in game %d: %w", accountID, gameID, e)
+	}
+
+	// Merge the applied fields onto the current row for the returned Member.
+	if upd.IsActive != nil {
+		current.IsActive = *upd.IsActive
+	}
+	if upd.IsGM != nil {
+		current.IsGM = *upd.IsGM
+	}
+	if upd.Handle != nil {
+		current.Handle = *upd.Handle
+	}
+	return current, nil
+}
+
 // existsInt reports whether query (which selects a constant when a row matches)
 // returns at least one row for the given args.
 func existsInt(conn *sqlite.Conn, query string, args ...any) (bool, error) {
