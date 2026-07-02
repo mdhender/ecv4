@@ -93,40 +93,11 @@ func (u AccountUpdate) empty() bool {
 //
 // ctx bounds acquiring the connection and running the update.
 func (s *Store) UpdateAccountByEmail(ctx context.Context, email string, upd AccountUpdate) error {
+	op := fmt.Sprintf("update account %q", email)
 	if upd.empty() {
-		return fmt.Errorf("update account %q: no changes requested", email)
+		return fmt.Errorf("%s: no changes requested", op)
 	}
-
-	var sets []string
-	var args []any
-	if upd.IsAdmin != nil {
-		sets = append(sets, "is_admin = ?")
-		args = append(args, boolToInt(*upd.IsAdmin))
-	}
-	if upd.IsActive != nil {
-		sets = append(sets, "is_active = ?")
-		args = append(args, boolToInt(*upd.IsActive))
-	}
-	if upd.HashedSecret != nil {
-		sets = append(sets, "hashed_secret = ?")
-		args = append(args, *upd.HashedSecret)
-	}
-	args = append(args, email)
-	query := "UPDATE accounts SET " + strings.Join(sets, ", ") + " WHERE email = ?;"
-
-	conn, err := s.pool.Get(ctx)
-	if err != nil {
-		return fmt.Errorf("update account %q: %w", email, err)
-	}
-	defer s.pool.Put(conn)
-
-	if err := sqlitex.Execute(conn, query, &sqlitex.ExecOptions{Args: args}); err != nil {
-		return fmt.Errorf("update account %q: %w", email, err)
-	}
-	if conn.Changes() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.updateAccountWhere(ctx, "email", email, op, upd)
 }
 
 // UpdateAccountByID applies upd to the account with the given id. It returns
@@ -136,12 +107,17 @@ func (s *Store) UpdateAccountByEmail(ctx context.Context, email string, upd Acco
 //
 // ctx bounds acquiring the connection and running the update.
 func (s *Store) UpdateAccountByID(ctx context.Context, id int64, upd AccountUpdate) error {
+	op := fmt.Sprintf("update account %d", id)
 	if upd.empty() {
-		return fmt.Errorf("update account %d: no changes requested", id)
+		return fmt.Errorf("%s: no changes requested", op)
 	}
+	return s.updateAccountWhere(ctx, "id", id, op, upd)
+}
 
-	var sets []string
-	var args []any
+// buildAccountUpdate turns upd into the parallel SET-clause fragments and their
+// arguments for an accounts UPDATE. Only the fields set in upd are included, so
+// the returned slices are non-empty exactly when upd is non-empty.
+func buildAccountUpdate(upd AccountUpdate) (sets []string, args []any) {
 	if upd.IsAdmin != nil {
 		sets = append(sets, "is_admin = ?")
 		args = append(args, boolToInt(*upd.IsAdmin))
@@ -154,17 +130,26 @@ func (s *Store) UpdateAccountByID(ctx context.Context, id int64, upd AccountUpda
 		sets = append(sets, "hashed_secret = ?")
 		args = append(args, *upd.HashedSecret)
 	}
-	args = append(args, id)
-	query := "UPDATE accounts SET " + strings.Join(sets, ", ") + " WHERE id = ?;"
+	return sets, args
+}
+
+// updateAccountWhere applies upd to the single account matching whereCol against
+// arg, returning ErrNotFound if no row matched; op labels errors. It is the
+// shared body of UpdateAccountByEmail and UpdateAccountByID, which guarantee upd
+// is non-empty before calling.
+func (s *Store) updateAccountWhere(ctx context.Context, whereCol string, arg any, op string, upd AccountUpdate) error {
+	sets, args := buildAccountUpdate(upd)
+	args = append(args, arg)
+	query := "UPDATE accounts SET " + strings.Join(sets, ", ") + " WHERE " + whereCol + " = ?;"
 
 	conn, err := s.pool.Get(ctx)
 	if err != nil {
-		return fmt.Errorf("update account %d: %w", id, err)
+		return fmt.Errorf("%s: %w", op, err)
 	}
 	defer s.pool.Put(conn)
 
 	if err := sqlitex.Execute(conn, query, &sqlitex.ExecOptions{Args: args}); err != nil {
-		return fmt.Errorf("update account %d: %w", id, err)
+		return fmt.Errorf("%s: %w", op, err)
 	}
 	if conn.Changes() == 0 {
 		return ErrNotFound
