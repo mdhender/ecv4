@@ -100,6 +100,37 @@ func TestLoginInactiveAccountIs401(t *testing.T) {
 	}
 }
 
+// TestLoginRejectionsAreIndistinguishable documents the anti-enumeration
+// property: unknown email, inactive account, and wrong password all return the
+// same 401 with the same generic message. The handler additionally runs a
+// throwaway bcrypt comparison on the unknown/inactive paths so their timing
+// matches a real login (timing itself is not asserted here — the equalized code
+// path is reviewed in Login — but this locks the observable response in place).
+func TestLoginRejectionsAreIndistinguishable(t *testing.T) {
+	st, pool := seedStore(t)
+	insertAccountWithPassword(t, pool, 1, "active@example.com", "correct-pw", true)
+	insertAccountWithPassword(t, pool, 2, "inactive@example.com", "correct-pw", false)
+	srv := NewServer(st, testTokens())
+
+	cases := []struct {
+		name, username, password string
+	}{
+		{"unknown user", "nobody@example.com", "correct-pw"},
+		{"inactive account", "inactive@example.com", "correct-pw"},
+		{"wrong password", "active@example.com", "wrong-pw"},
+	}
+	for _, tc := range cases {
+		resp := login(t, srv, tc.username, tc.password)
+		got, is := resp.(api.Login401JSONResponse)
+		if !is {
+			t.Fatalf("%s: got %T, want Login401JSONResponse", tc.name, resp)
+		}
+		if got.Code != "unauthorized" || got.Message != "invalid username or password" {
+			t.Fatalf("%s: got code=%q message=%q, want the generic 401", tc.name, got.Code, got.Message)
+		}
+	}
+}
+
 // TestLoginThenMe is the end-to-end proof: log in to get a real token, then use
 // it against /me through the full HTTP handler (routing + auth middleware +
 // verifier + GetMe), which must return the account.

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -210,4 +211,44 @@ func TestSeedDevelopmentAdmin(t *testing.T) {
 			t.Fatal("seeded admin secret does not verify")
 		}
 	})
+}
+
+func TestListAccountsEmpty(t *testing.T) {
+	dir := newTestDB(t)
+	var out bytes.Buffer
+	app := &App{Env: "development", Stdout: &out, Stderr: io.Discard}
+	if err := app.listAccounts(context.Background(), dir); err != nil {
+		t.Fatalf("listAccounts: %v", err)
+	}
+	if !strings.Contains(out.String(), "no accounts") {
+		t.Fatalf("stdout = %q, want the empty-table note", out.String())
+	}
+}
+
+// TestListAccountsColumns seeds a mix of accounts and checks the table lists them
+// all with their id, active, admin, and email — and never the hashed secret.
+func TestListAccountsColumns(t *testing.T) {
+	ctx := context.Background()
+	dir := newTestDB(t)
+	if err := newTestApp().createAccount(ctx, dir, "admin@example.com", "supersecret1", nil, true, true); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	if err := newTestApp().createAccount(ctx, dir, "off@example.com", "supersecret1", nil, false, false); err != nil {
+		t.Fatalf("seed inactive: %v", err)
+	}
+
+	var out bytes.Buffer
+	app := &App{Env: "development", Stdout: &out, Stderr: io.Discard}
+	if err := app.listAccounts(ctx, dir); err != nil {
+		t.Fatalf("listAccounts: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"ID", "ACTIVE", "ADMIN", "EMAIL", "admin@example.com", "off@example.com", "true", "false"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stdout = %q, want it to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "$2") {
+		t.Fatalf("stdout = %q, must not leak a bcrypt hash", got)
+	}
 }

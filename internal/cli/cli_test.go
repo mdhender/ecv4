@@ -147,6 +147,27 @@ func TestRunAccountUpdateTriState(t *testing.T) {
 	}
 }
 
+// TestRunAccountList drives the full parser so the `database account list`
+// subcommand registration is exercised end to end: create an account, then list
+// it and confirm the row appears.
+func TestRunAccountList(t *testing.T) {
+	dir := newTestDB(t)
+	if _, _, err := runCLI(t, "development",
+		"--db-dir", dir,
+		"database", "account", "create",
+		"--email", "listed@example.com", "--secret", "supersecret1", "--is-admin"); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	stdout, _, err := runCLI(t, "development", "--db-dir", dir, "database", "account", "list")
+	if err != nil {
+		t.Fatalf("account list: %v", err)
+	}
+	if !strings.Contains(stdout, "listed@example.com") {
+		t.Fatalf("stdout = %q, want it to list the seeded account", stdout)
+	}
+}
+
 // TestRunDBDirFromEnv verifies the ECV4_ env-var prefix is honored: --db-dir
 // left off the command line is read from ECV4_DB_DIR.
 func TestRunDBDirFromEnv(t *testing.T) {

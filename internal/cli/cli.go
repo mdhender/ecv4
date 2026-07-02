@@ -252,6 +252,24 @@ func (a *App) rootCommand() *ff.Command {
 	}
 	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountResetCmd)
 
+	// list is a read-only operator/recovery verb: print the accounts straight
+	// from the database with no running server or token, e.g. to confirm who is
+	// admin after a lockout. It inherits --db-dir from the shared account flags.
+	accountListFlags := ff.NewFlagSet("list").SetParent(databaseAccountFlags)
+	databaseAccountListCmd := &ff.Command{
+		Name:      "list",
+		Usage:     "game-server database account list",
+		ShortHelp: "list accounts in the database",
+		LongHelp: "List every account in the " + database.FileName + " database inside --db-dir,\n" +
+			"printing id, active, admin, and email in columns. Read-only: it makes no\n" +
+			"changes and needs no running server or token. Hashed secrets are never shown.",
+		Flags: accountListFlags,
+		Exec: func(ctx context.Context, _ []string) error {
+			return a.listAccounts(ctx, *dbDir)
+		},
+	}
+	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountListCmd)
+
 	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseAccountCmd)
 	rootCmd.Subcommands = append(rootCmd.Subcommands, databaseCmd)
 

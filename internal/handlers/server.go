@@ -26,6 +26,23 @@ var _ api.StrictServerInterface = (*Server)(nil)
 // misleading empty 200.
 var errNotImplemented = errors.New("not implemented")
 
+// dummyHash is a bcrypt hash of a fixed string, computed once at startup with
+// the same cost real secrets use. Login compares the presented password against
+// it on the unknown-email and inactive-account paths so every rejection performs
+// one bcrypt comparison and costs roughly the same. Without it, those paths skip
+// bcrypt and return in microseconds while a real, active account pays tens of
+// milliseconds, letting a caller enumerate accounts by response timing. The
+// comparison never matches; its result is discarded.
+var dummyHash = mustDummyHash()
+
+func mustDummyHash() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("no account ever uses this password"), bcrypt.DefaultCost)
+	if err != nil {
+		panic("handlers: precompute dummy bcrypt hash: " + err.Error())
+	}
+	return h
+}
+
 // Server carries the dependencies the handlers need: the store for persistence
 // and the token service for issuing and verifying JWTs. shutdown, when non-nil,
 // enables the development-only POST /admin/shutdown route and triggers the
@@ -82,11 +99,18 @@ func (s *Server) Login(ctx context.Context, request api.LoginRequestObject) (api
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		// Same message for unknown user, wrong password, and inactive account
-		// so the response does not reveal which accounts exist.
+		// so the response does not reveal which accounts exist. Run a throwaway
+		// bcrypt comparison so this path costs the same as a real login; without
+		// it the missing-account path returns far faster and timing reveals which
+		// emails exist. The result is discarded.
+		bcrypt.CompareHashAndPassword(dummyHash, []byte(request.Body.Password))
 		return loginUnauthorized("invalid username or password"), nil
 	case err != nil:
 		return nil, err
 	case !account.IsActive:
+		// Inactive accounts also skip the real comparison, so equalize their cost
+		// the same way. See the ErrNotFound case above.
+		bcrypt.CompareHashAndPassword(dummyHash, []byte(request.Body.Password))
 		return loginUnauthorized("invalid username or password"), nil
 	}
 
