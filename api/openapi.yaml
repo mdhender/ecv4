@@ -157,6 +157,32 @@ paths:
                 $ref: '#/components/schemas/ListMyGamesResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /me/password:
+    post:
+      tags: [Me]
+      operationId: changeMyPassword
+      summary: Change the authenticated user's password
+      description: |
+        Self-service password change for the logged-in account. The caller must
+        supply their current password, which is verified against the stored hash
+        before the new password is applied. On success the new password is hashed
+        and stored, and the caller's other sessions are revoked so a stolen
+        session cannot outlive the password it was created under. No admin role is
+        required; the account state is re-read fresh (an account deactivated since
+        the token was issued cannot change its password).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '204':
+          description: Password changed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /accounts:
     get:
       tags: [Accounts]
@@ -637,6 +663,20 @@ components:
         refreshToken:
           type: string
           minLength: 1
+    ChangePasswordRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          format: password
+          description: The account's existing password, verified before the change.
+        newPassword:
+          type: string
+          minLength: 8
+          format: password
+          description: The replacement password. Must satisfy the secret length policy (at least 8 characters).
     AuthTokens:
       type: object
       required: [accessToken, refreshToken, tokenType, expiresInSeconds]
