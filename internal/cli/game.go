@@ -4,23 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/mdhender/ecv4/internal/database"
+	"github.com/mdhender/ecv4/internal/gamerules"
 	"github.com/mdhender/ecv4/internal/store"
-)
-
-// gameCodePattern and memberHandlePattern mirror the DB CHECKs the migrations
-// apply (games.code and game_account_role.handle) and the equivalent
-// service-layer patterns in internal/handlers/games.go. They are duplicated here
-// rather than exported so the offline verbs give a clear error instead of letting
-// the DB CHECK surface as an opaque failure; the store's CHECK remains the
-// backstop.
-var (
-	gameCodePattern     = regexp.MustCompile(`^[A-Z][A-Z]+$`)
-	memberHandlePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]+$`)
 )
 
 // createGame opens the database in dbDir and inserts a new game directly, with no
@@ -30,8 +19,8 @@ var (
 // matrix. The new game starts in 'draft' and active; it is printed on success.
 func (a *App) createGame(ctx context.Context, dbDir, code, name string, description *string) error {
 	code = strings.TrimSpace(code)
-	if !gameCodePattern.MatchString(code) {
-		return fmt.Errorf("code must be two or more uppercase ASCII letters (A-Z)")
+	if !gamerules.ValidCode(code) {
+		return gamerules.ErrInvalidCode
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -106,16 +95,16 @@ func (a *App) listGames(ctx context.Context, dbDir string) error {
 // only store-level integrity, NOT the API's recruiting-only / active-GM gates.
 func (a *App) addMember(ctx context.Context, dbDir, code, email, handle string, isGM bool) error {
 	code = strings.TrimSpace(code)
-	if !gameCodePattern.MatchString(code) {
-		return fmt.Errorf("code must be two or more uppercase ASCII letters (A-Z)")
+	if !gamerules.ValidCode(code) {
+		return gamerules.ErrInvalidCode
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
 		return fmt.Errorf("game add-member requires --email")
 	}
 	handle = strings.TrimSpace(handle)
-	if handle != "" && !memberHandlePattern.MatchString(handle) {
-		return fmt.Errorf("handle must be two or more characters, start with a letter, and use only letters, digits, '.', '_' or '-'")
+	if handle != "" && !gamerules.ValidHandle(handle) {
+		return gamerules.ErrInvalidHandle
 	}
 
 	pool, closeDB, err := database.Open(ctx, dbDir)

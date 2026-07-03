@@ -3,7 +3,6 @@ package auth
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/mdhender/ecv4/internal/httputil"
 )
@@ -35,13 +34,14 @@ func RequireBearerJWT(verifier Verifier, next http.Handler) http.Handler {
 			return
 		}
 
+		// Verify enforces the signature, issuer, access audience, AND expiry against
+		// the token service's clock (jwt.WithTimeFunc), so an expired token is
+		// rejected here. We deliberately do not re-check expiry against the wall
+		// clock: that would be the only spot in the auth path bypassing the
+		// injectable service clock, and could only ever diverge under WithClock.
 		claims, err := verifier.Verify(strings.TrimSpace(strings.TrimPrefix(authz, prefix)))
 		if err != nil {
 			httputil.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "invalid access token")
-			return
-		}
-		if !claims.ExpiresAt.IsZero() && time.Now().After(claims.ExpiresAt) {
-			httputil.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "expired access token")
 			return
 		}
 

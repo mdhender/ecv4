@@ -4,19 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/mdhender/ecv4/internal/api"
-	"github.com/mdhender/ecv4/internal/auth"
+	"github.com/mdhender/ecv4/internal/gamerules"
 	"github.com/mdhender/ecv4/internal/store"
 )
-
-// gameCodePattern is the game-code rule enforced at the service layer. It mirrors
-// the games.code CHECK the database applies (migration 0006): two or more
-// uppercase ASCII letters and nothing else. Enforcing it here turns a bad code
-// into a clear 400 instead of letting the DB CHECK surface as an opaque 500.
-var gameCodePattern = regexp.MustCompile(`^[A-Z][A-Z]+$`)
 
 // CreateGame creates a game. It is admin-only (a game-scoped GM role cannot
 // apply before any game exists), validates the code and name in Go so a bad
@@ -26,21 +19,17 @@ func (s *Server) CreateGame(ctx context.Context, request api.CreateGameRequestOb
 		return nil, err
 	} else if authErr != nil {
 		if authErr.forbidden {
-			return api.CreateGame403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: "forbidden", Message: authErr.message,
-			}}, nil
+			return api.CreateGame403JSONResponse{ForbiddenJSONResponse: authErr.forbiddenBody()}, nil
 		}
-		return api.CreateGame401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: "unauthorized", Message: authErr.message,
-		}}, nil
+		return api.CreateGame401JSONResponse{UnauthorizedJSONResponse: authErr.unauthorizedBody()}, nil
 	}
 
 	if request.Body == nil {
 		return createGameBadRequest("request body is required"), nil
 	}
 
-	if !gameCodePattern.MatchString(request.Body.Code) {
-		return createGameBadRequest("code must be two or more uppercase ASCII letters (A-Z)"), nil
+	if !gamerules.ValidCode(request.Body.Code) {
+		return createGameBadRequest(gamerules.ErrInvalidCode.Error()), nil
 	}
 
 	name := strings.TrimSpace(request.Body.Name)
@@ -91,19 +80,12 @@ func statusIndex(s api.GameStatus) int {
 // An archived game is frozen: the only accepted change is an admin moving its
 // status to another state (the locked archived-freeze exception).
 func (s *Server) UpdateGame(ctx context.Context, request api.UpdateGameRequestObject) (api.UpdateGameResponseObject, error) {
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return updateGameUnauthorized("missing credentials"), nil
-	}
-
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return updateGameUnauthorized("account no longer exists"), nil
-	case err != nil:
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
 		return nil, err
-	case !account.IsActive:
-		return updateGameUnauthorized("account is not active"), nil
+	}
+	if msg != "" {
+		return updateGameUnauthorized(msg), nil
 	}
 
 	if request.Body == nil {
@@ -271,19 +253,12 @@ func updateGameConflict(message string) api.UpdateGame409JSONResponse {
 // authenticated handlers it re-reads fresh account state rather than trusting the
 // token.
 func (s *Server) ListGameMembers(ctx context.Context, request api.ListGameMembersRequestObject) (api.ListGameMembersResponseObject, error) {
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return listMembersUnauthorized("missing credentials"), nil
-	}
-
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return listMembersUnauthorized("account no longer exists"), nil
-	case err != nil:
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
 		return nil, err
-	case !account.IsActive:
-		return listMembersUnauthorized("account is not active"), nil
+	}
+	if msg != "" {
+		return listMembersUnauthorized(msg), nil
 	}
 
 	// Gate on visibility with the same rule as GetGame: reusing GameByID means the
@@ -310,12 +285,6 @@ func (s *Server) ListGameMembers(ctx context.Context, request api.ListGameMember
 	return api.ListGameMembers200JSONResponse{Members: out}, nil
 }
 
-// memberHandlePattern is the handle rule enforced at the service layer. It mirrors
-// the game_account_role.handle CHECK (migration 0004): two or more characters,
-// starting with a letter, using only letters, digits, '.', '_' or '-'. Enforcing
-// it here turns a bad handle into a clear 400 rather than an opaque DB-CHECK 500.
-var memberHandlePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]+$`)
-
 // AddGameMember assigns an account to a game as a GM or a net-new player. It
 // enforces the game-management action matrix: the caller must be an admin or an
 // active GM of the game; adding a GM is allowed in any status except archived,
@@ -323,19 +292,12 @@ var memberHandlePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]+$`)
 // archived freezes every update). An omitted handle defaults to player_N in the
 // store; a duplicate handle or an already-assigned account is a 409.
 func (s *Server) AddGameMember(ctx context.Context, request api.AddGameMemberRequestObject) (api.AddGameMemberResponseObject, error) {
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return addMemberUnauthorized("missing credentials"), nil
-	}
-
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return addMemberUnauthorized("account no longer exists"), nil
-	case err != nil:
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
 		return nil, err
-	case !account.IsActive:
-		return addMemberUnauthorized("account is not active"), nil
+	}
+	if msg != "" {
+		return addMemberUnauthorized(msg), nil
 	}
 
 	if request.Body == nil {
@@ -347,8 +309,8 @@ func (s *Server) AddGameMember(ctx context.Context, request api.AddGameMemberReq
 	handle := ""
 	if request.Body.Handle != nil {
 		handle = strings.TrimSpace(*request.Body.Handle)
-		if !memberHandlePattern.MatchString(handle) {
-			return addMemberBadRequest("handle must be two or more characters, start with a letter, and use only letters, digits, '.', '_' or '-'"), nil
+		if !gamerules.ValidHandle(handle) {
+			return addMemberBadRequest(gamerules.ErrInvalidHandle.Error()), nil
 		}
 	}
 	isGM := request.Body.IsGm != nil && *request.Body.IsGm
@@ -460,19 +422,12 @@ func addMemberConflict(message string) api.AddGameMember409JSONResponse {
 // authorized, so a redundant no-op is accepted without a spurious 403. An
 // archived game rejects every update (admins included).
 func (s *Server) UpdateGameMember(ctx context.Context, request api.UpdateGameMemberRequestObject) (api.UpdateGameMemberResponseObject, error) {
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return updateMemberUnauthorized("missing credentials"), nil
-	}
-
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return updateMemberUnauthorized("account no longer exists"), nil
-	case err != nil:
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
 		return nil, err
-	case !account.IsActive:
-		return updateMemberUnauthorized("account is not active"), nil
+	}
+	if msg != "" {
+		return updateMemberUnauthorized(msg), nil
 	}
 
 	if request.Body == nil {
@@ -575,8 +530,8 @@ func (s *Server) UpdateGameMember(ctx context.Context, request api.UpdateGameMem
 	// and not to a 'player_' handle.
 	if body.Handle != nil {
 		handle := strings.TrimSpace(*body.Handle)
-		if !memberHandlePattern.MatchString(handle) {
-			return updateMemberBadRequest("handle must be two or more characters, start with a letter, and use only letters, digits, '.', '_' or '-'"), nil
+		if !gamerules.ValidHandle(handle) {
+			return updateMemberBadRequest(gamerules.ErrInvalidHandle.Error()), nil
 		}
 		if handle != target.Handle { // an actual rename
 			switch {
