@@ -59,7 +59,7 @@ func TestRefreshRotatesTokens(t *testing.T) {
 	if out.RefreshToken == tok.RefreshToken {
 		t.Fatal("refresh token should be rotated, not reissued unchanged")
 	}
-	if out.TokenType != api.Bearer {
+	if out.TokenType != api.AuthTokensTokenTypeBearer {
 		t.Fatalf("tokenType = %q, want Bearer", out.TokenType)
 	}
 }

@@ -164,3 +164,46 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// TestRequestLoggerTagsImpersonation checks that when a downstream handler
+// records an impersonation (via SetImpersonation), the request log line carries
+// the actor and subject — the minimum audit surface for a "pose-as" request.
+func TestRequestLoggerTagsImpersonation(t *testing.T) {
+	cap := &capturingHandler{}
+	handler := RequestLogger(slog.New(cap), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetImpersonation(r.Context(), 7, 42) // admin 7 acting as account 42
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/me", nil))
+
+	if len(cap.records) != 1 {
+		t.Fatalf("expected 1 log record, got %d", len(cap.records))
+	}
+	a := attrs(cap.records[0])
+	if got := a["actor"].Int64(); got != 7 {
+		t.Errorf("logged actor = %d, want 7", got)
+	}
+	if got := a["subject"].Int64(); got != 42 {
+		t.Errorf("logged subject = %d, want 42", got)
+	}
+}
+
+// TestRequestLoggerOmitsImpersonationWhenAbsent guards against tagging ordinary
+// requests: no SetImpersonation call means no actor/subject attributes.
+func TestRequestLoggerOmitsImpersonationWhenAbsent(t *testing.T) {
+	cap := &capturingHandler{}
+	handler := RequestLogger(slog.New(cap), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/me", nil))
+
+	a := attrs(cap.records[0])
+	if _, ok := a["actor"]; ok {
+		t.Error("ordinary request log carries an actor attribute")
+	}
+	if _, ok := a["subject"]; ok {
+		t.Error("ordinary request log carries a subject attribute")
+	}
+}

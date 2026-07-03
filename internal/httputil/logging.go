@@ -43,10 +43,15 @@ func RequestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 		if id == "" {
 			id = newRequestID()
 		}
+		// Install a mutable impersonation holder before the handler chain runs so
+		// the authenticator can fill it in (SetImpersonation) and this logger can
+		// read it back afterward.
+		ctx, imp := withImpersonationHolder(r.Context())
 		if id != "" {
 			w.Header().Set(RequestIDHeader, id)
-			r = r.WithContext(withRequestID(r.Context(), id))
+			ctx = withRequestID(ctx, id)
 		}
+		r = r.WithContext(ctx)
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
@@ -56,13 +61,22 @@ func RequestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 		if rec.status >= 500 {
 			level = slog.LevelError
 		}
-		logger.LogAttrs(r.Context(), level, "http request",
+		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
 			slog.String("duration", time.Since(start).String()),
 			slog.Int("bytes", rec.bytes),
 			slog.String("requestId", id),
-		)
+		}
+		// Attribute an impersonated request to both the real admin (actor) and the
+		// account it acted as (subject), so every such request is auditable.
+		if imp.actorID != 0 {
+			attrs = append(attrs,
+				slog.Int64("actor", imp.actorID),
+				slog.Int64("subject", imp.subjectID),
+			)
+		}
+		logger.LogAttrs(r.Context(), level, "http request", attrs...)
 	})
 }
