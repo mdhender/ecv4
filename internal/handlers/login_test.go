@@ -66,7 +66,7 @@ func TestLoginSuccessIssuesTokens(t *testing.T) {
 	if ok.AccessToken == "" || ok.RefreshToken == "" {
 		t.Fatal("expected non-empty access and refresh tokens")
 	}
-	if ok.TokenType != api.Bearer {
+	if ok.TokenType != api.AuthTokensTokenTypeBearer {
 		t.Fatalf("tokenType = %q, want Bearer", ok.TokenType)
 	}
 	if ok.ExpiresInSeconds != 900 {

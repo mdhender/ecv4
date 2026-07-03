@@ -401,6 +401,53 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /admin/impersonation:
+    post:
+      tags: [Admin]
+      operationId: createImpersonation
+      summary: Mint a short-lived token to act as another account
+      description: |
+        Admin only. Mints a short-lived, non-refreshable access token that bears
+        a target non-admin account's identity, so support and debugging can
+        reproduce exactly what that player sees and can do. Admins are god-mode
+        but never hold a game membership, so this is the only way for an admin to
+        exercise player- or GM-scoped, membership-gated behavior.
+
+        The minted token carries the target as its subject and the calling admin
+        as an actor (`act`) claim used only for auditing — every request made
+        with it is attributed to the real admin. Authorization inside the API
+        then uses the *effective* (target) identity, so the token confers the
+        target's access only, never admin. The token lives 15 minutes, cannot be
+        refreshed (no refresh token is issued and it is rejected at
+        /auth/refresh), and any response to a request bearing it carries an
+        `Impersonated-Subject` header naming the target.
+
+        The target must be an active, non-admin account other than the caller;
+        impersonating yourself, another admin, or an inactive account is
+        rejected (409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImpersonationRequest'
+      responses:
+        '200':
+          description: Impersonation token minted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImpersonationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /games:
     get:
       tags: [Games]
@@ -913,6 +960,56 @@ components:
           minimum: 0
           description: Number of expired refresh-token records removed.
           example: 12
+    ImpersonationRequest:
+      type: object
+      required: [accountId]
+      properties:
+        accountId:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The active, non-admin account to impersonate.
+          example: 42
+    ImpersonationResponse:
+      type: object
+      required: [token, tokenType, expiresInSeconds, subject, actor]
+      properties:
+        token:
+          type: string
+          description: |
+            A short-lived (15-minute), non-refreshable access token bearing the
+            subject's identity. Present it as a normal Bearer token; responses to
+            requests made with it carry an Impersonated-Subject header.
+        tokenType:
+          type: string
+          enum: [Bearer]
+        expiresInSeconds:
+          type: integer
+          minimum: 1
+          example: 900
+        subject:
+          $ref: '#/components/schemas/ImpersonationSubject'
+        actor:
+          $ref: '#/components/schemas/ImpersonationActor'
+    ImpersonationSubject:
+      type: object
+      required: [accountId, email]
+      description: The account being impersonated (the effective identity).
+      properties:
+        accountId:
+          type: integer
+          format: int64
+        email:
+          type: string
+          format: email
+    ImpersonationActor:
+      type: object
+      required: [accountId]
+      description: The admin on whose behalf the token acts (the auditable real identity).
+      properties:
+        accountId:
+          type: integer
+          format: int64
     LoginRequest:
       type: object
       required: [username, password]

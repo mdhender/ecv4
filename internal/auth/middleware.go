@@ -45,6 +45,15 @@ func RequireBearerJWT(verifier Verifier, next http.Handler) http.Handler {
 			return
 		}
 
+		// An impersonation token acts as claims.UserID on behalf of claims.Actor.
+		// Advertise the effective subject on every response so the impersonation
+		// is visible (even from curl), and record actor+subject for the request
+		// log. Authorization downstream still uses claims.UserID (the target).
+		if claims.Impersonated() {
+			w.Header().Set(httputil.ImpersonatedSubjectHeader, claims.Subject)
+			httputil.SetImpersonation(r.Context(), claims.Actor, claims.UserID)
+		}
+
 		next.ServeHTTP(w, r.WithContext(WithClaims(r.Context(), claims)))
 	})
 }

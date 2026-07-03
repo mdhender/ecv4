@@ -138,7 +138,7 @@ func (s *Server) Login(ctx context.Context, request api.LoginRequestObject) (api
 	return api.Login200JSONResponse{
 		AccessToken:      accessToken,
 		RefreshToken:     refreshToken,
-		TokenType:        api.Bearer,
+		TokenType:        api.AuthTokensTokenTypeBearer,
 		ExpiresInSeconds: int(s.tokens.AccessTTL().Seconds()),
 	}, nil
 }
@@ -227,7 +227,7 @@ func (s *Server) RefreshToken(ctx context.Context, request api.RefreshTokenReque
 	return api.RefreshToken200JSONResponse{
 		AccessToken:      accessToken,
 		RefreshToken:     refreshToken,
-		TokenType:        api.Bearer,
+		TokenType:        api.AuthTokensTokenTypeBearer,
 		ExpiresInSeconds: int(s.tokens.AccessTTL().Seconds()),
 	}, nil
 }

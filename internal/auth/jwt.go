@@ -16,6 +16,13 @@ const (
 	refreshAudience = "ecv4-refresh"
 )
 
+// impersonationTTL is the fixed lifetime of an impersonation token. It is
+// deliberately short and independent of the configurable access-token TTL: an
+// admin acting as another account is a time-boxed support capability, not a
+// session, so it is not tied to (and cannot be widened by) the access-token
+// configuration.
+const impersonationTTL = 15 * time.Minute
+
 // TokenService issues and verifies HMAC-SHA256 signed JWTs. Access tokens carry
 // identity (subject, username, roles) and are what Verify accepts; refresh
 // tokens carry only the subject and a distinct audience so they can never be
@@ -56,6 +63,10 @@ func (ts *TokenService) AccessTTL() time.Duration { return ts.accessTTL }
 // RefreshTTL is the configured refresh-token lifetime.
 func (ts *TokenService) RefreshTTL() time.Duration { return ts.refreshTTL }
 
+// ImpersonationTTL is the fixed impersonation-token lifetime (15 minutes),
+// exposed so handlers can report expiresInSeconds without duplicating the value.
+func (ts *TokenService) ImpersonationTTL() time.Duration { return impersonationTTL }
+
 // Now returns the service's current time from its (optionally injected) clock,
 // so callers that need "now" for token-adjacent work — pruning expired refresh
 // tokens, for instance — stay consistent with issuance and with WithClock in
@@ -70,6 +81,10 @@ type tokenClaims struct {
 	Username string   `json:"username,omitempty"`
 	Roles    []string `json:"roles,omitempty"`
 	Family   string   `json:"family,omitempty"`
+	// Act is the impersonating admin's account id, present only on impersonation
+	// tokens. Its presence is what marks a token as impersonation; an ordinary
+	// access token omits it.
+	Act int64 `json:"act,omitempty"`
 }
 
 // IssueAccess returns a signed access token for the account and its expiry time.
@@ -80,6 +95,27 @@ func (ts *TokenService) IssueAccess(accountID int64, username string, roles []st
 		RegisteredClaims: ts.registered(accountID, accessAudience, now, exp),
 		Username:         username,
 		Roles:            roles,
+	}
+	signed, err := ts.sign(claims)
+	return signed, exp, err
+}
+
+// IssueImpersonation returns a signed, short-lived access token that lets an
+// admin (actor) act as another account (accountID, with that account's username
+// and roles). It uses the access audience, so every secured route accepts it
+// like any access token and authorization keys off the impersonated account —
+// but it carries the actor as an `act` claim (surfaced as Claims.Actor) for
+// auditing, and its lifetime is the fixed impersonationTTL, not the configured
+// access TTL. No refresh token accompanies it: it is deliberately
+// non-refreshable (an access-audience token is rejected at /auth/refresh).
+func (ts *TokenService) IssueImpersonation(accountID int64, username string, roles []string, actor int64) (string, time.Time, error) {
+	now := ts.now()
+	exp := now.Add(impersonationTTL)
+	claims := tokenClaims{
+		RegisteredClaims: ts.registered(accountID, accessAudience, now, exp),
+		Username:         username,
+		Roles:            roles,
+		Act:              actor,
 	}
 	signed, err := ts.sign(claims)
 	return signed, exp, err
@@ -176,6 +212,7 @@ func (ts *TokenService) Verify(raw string) (Claims, error) {
 		Username:  claims.Username,
 		Roles:     claims.Roles,
 		ExpiresAt: expiresAt,
+		Actor:     claims.Act,
 	}, nil
 }
 
