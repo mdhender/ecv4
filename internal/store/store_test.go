@@ -675,4 +675,48 @@ func TestLookupsNotFound(t *testing.T) {
 	if _, _, err := st.Credentials(ctx, "nobody@example.com"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Credentials unknown: got %v, want ErrNotFound", err)
 	}
+	if _, err := st.AccountByEmail(ctx, "nobody@example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("AccountByEmail unknown: got %v, want ErrNotFound", err)
+	}
+	if _, err := st.GameByCode(ctx, "NOPE"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GameByCode unknown: got %v, want ErrNotFound", err)
+	}
+}
+
+func TestAccountByEmail(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+
+	id, err := st.CreateAccount(ctx, "found@example.com", true, false, "hash")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	account, err := st.AccountByEmail(ctx, "found@example.com")
+	if err != nil {
+		t.Fatalf("AccountByEmail: %v", err)
+	}
+	if account.ID != id || account.Email != "found@example.com" || !account.IsAdmin || account.IsActive {
+		t.Fatalf("AccountByEmail = %+v, want id=%d email=found@example.com is_admin=true is_active=false", account, id)
+	}
+}
+
+func TestGameByCode(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+
+	desc := "The playtest."
+	created, err := st.CreateGame(ctx, "GAMMA", "Gamma Campaign", &desc)
+	if err != nil {
+		t.Fatalf("CreateGame: %v", err)
+	}
+
+	game, err := st.GameByCode(ctx, "GAMMA")
+	if err != nil {
+		t.Fatalf("GameByCode: %v", err)
+	}
+	if game.ID != created.ID || game.Code != "GAMMA" || game.Name != "Gamma Campaign" ||
+		game.Status != "draft" || game.Description == nil || *game.Description != desc || !game.IsActive {
+		t.Fatalf("GameByCode = %+v, want the created game", game)
+	}
 }

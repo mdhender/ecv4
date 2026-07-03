@@ -271,6 +271,112 @@ func (a *App) rootCommand() *ff.Command {
 	databaseAccountCmd.Subcommands = append(databaseAccountCmd.Subcommands, databaseAccountListCmd)
 
 	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseAccountCmd)
+
+	// Game management is grouped under `database game <verb>`, mirroring
+	// `database account`. These are OFFLINE bootstrap verbs: they run directly
+	// against the database file with no running server and no authorization gate,
+	// enforcing only store-level integrity (valid code/handle, unique code/handle,
+	// member-exists) — NOT the API's lifecycle/role action matrix. They exist so an
+	// admin can seed a game and its first GM before the HTTP API is exercised. The
+	// database directory comes from the shared --db-dir flag / ECV4_DB_DIR.
+	databaseGameFlags := ff.NewFlagSet("game").SetParent(databaseFlags)
+	databaseGameCmd := &ff.Command{
+		Name:      "game",
+		Usage:     "game-server database game <SUBCOMMAND>",
+		ShortHelp: "manage games in the database (offline bootstrap)",
+		Flags:     databaseGameFlags,
+	}
+
+	gameCreateFlags := ff.NewFlagSet("create").SetParent(databaseGameFlags)
+	gcCode := gameCreateFlags.StringLong("code", "", "game code: two or more uppercase ASCII letters (required)")
+	gcName := gameCreateFlags.StringLong("name", "", "human-readable game name (required)")
+	gcDescription := gameCreateFlags.StringLong("description", "", "optional game description")
+	databaseGameCreateCmd := &ff.Command{
+		Name:      "create",
+		Usage:     "game-server database game create --code <code> --name <name> [--description <text>]",
+		ShortHelp: "create a new game",
+		LongHelp: "Create a game in the " + database.FileName + " database inside --db-dir. The\n" +
+			"code must be two or more uppercase ASCII letters and unique; the name is\n" +
+			"required. The game starts in 'draft' and active. This is an OFFLINE bootstrap\n" +
+			"verb: it runs with no server and no authorization gate, enforcing only\n" +
+			"store-level integrity — not the API's lifecycle/role rules.",
+		Flags: gameCreateFlags,
+		Exec: func(ctx context.Context, _ []string) error {
+			var description *string
+			if isFlagSet(gameCreateFlags, "description") {
+				description = gcDescription
+			}
+			return a.createGame(ctx, *dbDir, *gcCode, *gcName, description)
+		},
+	}
+	databaseGameCmd.Subcommands = append(databaseGameCmd.Subcommands, databaseGameCreateCmd)
+
+	// list is a read-only bootstrap verb: print every game straight from the
+	// database — including hidden (is_active=0) ones — with no running server.
+	gameListFlags := ff.NewFlagSet("list").SetParent(databaseGameFlags)
+	databaseGameListCmd := &ff.Command{
+		Name:      "list",
+		Usage:     "game-server database game list",
+		ShortHelp: "list games in the database (incl. hidden)",
+		LongHelp: "List every game in the " + database.FileName + " database inside --db-dir,\n" +
+			"including hard-hidden (is_active=false) games, printing id, active, status,\n" +
+			"code, and name in columns. Read-only: no changes, no running server, no token.",
+		Flags: gameListFlags,
+		Exec: func(ctx context.Context, _ []string) error {
+			return a.listGames(ctx, *dbDir)
+		},
+	}
+	databaseGameCmd.Subcommands = append(databaseGameCmd.Subcommands, databaseGameListCmd)
+
+	// add-member seeds a game's roster offline. --is-gm makes the member a game
+	// master; the handle defaults to player_N when omitted, and a collision fails.
+	gameAddMemberFlags := ff.NewFlagSet("add-member").SetParent(databaseGameFlags)
+	amCode := gameAddMemberFlags.StringLong("code", "", "code of the game to add the member to (required)")
+	amEmail := gameAddMemberFlags.StringLong("email", "", "email of the account to add (required)")
+	amHandle := gameAddMemberFlags.StringLong("handle", "", "member handle (optional; defaults to player_N)")
+	amIsGM := gameAddMemberFlags.BoolLong("is-gm", "add the member as a game master")
+	databaseGameAddMemberCmd := &ff.Command{
+		Name:      "add-member",
+		Usage:     "game-server database game add-member --code <code> --email <email> [--handle <handle>] [--is-gm]",
+		ShortHelp: "add an account to a game's roster",
+		LongHelp: "Add the account with --email to the game with --code as a new active member\n" +
+			"in the " + database.FileName + " database inside --db-dir. The handle defaults to\n" +
+			"player_N (N = current member count + 1) when omitted; a supplied handle must be\n" +
+			"two or more characters starting with a letter. A handle collision — computed or\n" +
+			"supplied — fails clearly and is never auto-bumped. Pass --is-gm to add a game\n" +
+			"master. OFFLINE bootstrap: no server, no authorization gate — only store-level\n" +
+			"integrity (unique handle, not-already-a-member) is enforced.",
+		Flags: gameAddMemberFlags,
+		Exec: func(ctx context.Context, _ []string) error {
+			return a.addMember(ctx, *dbDir, *amCode, *amEmail, *amHandle, *amIsGM)
+		},
+	}
+	databaseGameCmd.Subcommands = append(databaseGameCmd.Subcommands, databaseGameAddMemberCmd)
+
+	// assign-gm is a discoverable alias for the GM case of add-member: it forwards
+	// to the same addMember path with is_gm forced true, mirroring how
+	// `account reset-password` aliases `account update`.
+	gameAssignGMFlags := ff.NewFlagSet("assign-gm").SetParent(databaseGameFlags)
+	agCode := gameAssignGMFlags.StringLong("code", "", "code of the game to assign the GM to (required)")
+	agEmail := gameAssignGMFlags.StringLong("email", "", "email of the account to make a game master (required)")
+	agHandle := gameAssignGMFlags.StringLong("handle", "", "GM handle (optional; defaults to player_N)")
+	databaseGameAssignGMCmd := &ff.Command{
+		Name:      "assign-gm",
+		Usage:     "game-server database game assign-gm --code <code> --email <email> [--handle <handle>]",
+		ShortHelp: "add an account to a game as a game master",
+		LongHelp: "Add the account with --email to the game with --code as an active game master\n" +
+			"in the " + database.FileName + " database inside --db-dir. This is a convenience\n" +
+			"alias for `database game add-member --code ... --email ... --is-gm`, useful for\n" +
+			"seeding a game's first GM. The handle defaults to player_N when omitted and a\n" +
+			"collision fails clearly. OFFLINE bootstrap: no server, no authorization gate.",
+		Flags: gameAssignGMFlags,
+		Exec: func(ctx context.Context, _ []string) error {
+			return a.addMember(ctx, *dbDir, *agCode, *agEmail, *agHandle, true)
+		},
+	}
+	databaseGameCmd.Subcommands = append(databaseGameCmd.Subcommands, databaseGameAssignGMCmd)
+
+	databaseCmd.Subcommands = append(databaseCmd.Subcommands, databaseGameCmd)
 	rootCmd.Subcommands = append(rootCmd.Subcommands, databaseCmd)
 
 	return rootCmd

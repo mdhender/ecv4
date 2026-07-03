@@ -443,6 +443,43 @@ func (s *Store) AccountByID(ctx context.Context, id int64) (Account, error) {
 	return account, nil
 }
 
+// AccountByEmail returns the account with the given (normalized, lower-cased)
+// email, without the hashed secret. It returns ErrNotFound if no such account
+// exists. It mirrors AccountByID, selecting by email instead of id, and is used
+// by the offline `database game` roster verbs to resolve an --email to an id.
+// The returned account may be inactive; callers decide whether that is
+// acceptable.
+//
+// ctx bounds acquiring the connection and running the query; a cancelled ctx
+// interrupts the read.
+func (s *Store) AccountByEmail(ctx context.Context, email string) (Account, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Account{}, fmt.Errorf("account by email: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	account := Account{Email: email}
+	found := false
+	err = sqlitex.Execute(conn, "SELECT id, is_admin, is_active FROM accounts WHERE email = ?;", &sqlitex.ExecOptions{
+		Args: []any{email},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			found = true
+			account.ID = stmt.ColumnInt64(0)
+			account.IsAdmin = stmt.ColumnInt(1) != 0
+			account.IsActive = stmt.ColumnInt(2) != 0
+			return nil
+		},
+	})
+	if err != nil {
+		return Account{}, fmt.Errorf("account by email %q: %w", email, err)
+	}
+	if !found {
+		return Account{}, ErrNotFound
+	}
+	return account, nil
+}
+
 // ListAccounts returns all accounts ordered by id, without hashed secrets. An
 // empty table yields an empty slice, not an error.
 //
@@ -807,6 +844,43 @@ func (s *Store) GameByID(ctx context.Context, id, accountID int64, isAdmin bool)
 	})
 	if err != nil {
 		return Game{}, fmt.Errorf("game by id %d: %w", id, err)
+	}
+	if !found {
+		return Game{}, ErrNotFound
+	}
+	return game, nil
+}
+
+// GameByCode returns the game with the given code, applying no visibility filter.
+// It returns ErrNotFound if no game has that code. Unlike GameByID it is not
+// caller-scoped: it exists for the offline `database game` verbs, which run as a
+// direct-DB admin bootstrap and resolve a --code to a game (and its id) without
+// an authenticated caller. Codes are unique (games.code), so at most one row
+// matches.
+//
+// ctx bounds acquiring the connection and running the query; a cancelled ctx
+// interrupts the read.
+func (s *Store) GameByCode(ctx context.Context, code string) (Game, error) {
+	conn, err := s.pool.Get(ctx)
+	if err != nil {
+		return Game{}, fmt.Errorf("game by code: %w", err)
+	}
+	defer s.pool.Put(conn)
+
+	var game Game
+	found := false
+	err = sqlitex.Execute(conn,
+		"SELECT id, code, name, status, description, is_active FROM games WHERE code = ?;",
+		&sqlitex.ExecOptions{
+			Args: []any{code},
+			ResultFunc: func(stmt *sqlite.Stmt) error {
+				found = true
+				game = scanGame(stmt)
+				return nil
+			},
+		})
+	if err != nil {
+		return Game{}, fmt.Errorf("game by code %q: %w", code, err)
 	}
 	if !found {
 		return Game{}, ErrNotFound
