@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,8 +36,18 @@ func TestVerifyRejectsTamperedToken(t *testing.T) {
 	ts := NewTokenService(testSecret, time.Minute, time.Hour)
 	token, _, _ := ts.IssueAccess(1, "a@b.com", nil)
 
-	// Flip the last character of the signature.
-	bad := token[:len(token)-1] + string(flip(token[len(token)-1]))
+	// Tamper by flipping a bit in the decoded signature bytes, then re-encoding.
+	// Flipping the last base64url *character* is unsound: a 32-byte HS256 signature
+	// encodes to 43 no-pad characters whose final character carries redundant
+	// low-order bits, so a different final character can decode to the same bytes
+	// and still verify (the source of a historical flake — see issue #65).
+	dot := strings.LastIndexByte(token, '.')
+	sig, err := base64.RawURLEncoding.DecodeString(token[dot+1:])
+	if err != nil {
+		t.Fatalf("decode signature: %v", err)
+	}
+	sig[0] ^= 0x01
+	bad := token[:dot+1] + base64.RawURLEncoding.EncodeToString(sig)
 	if _, err := ts.Verify(bad); err == nil {
 		t.Fatal("expected tampered token to be rejected")
 	}
@@ -140,11 +152,4 @@ func TestVerifyRejectsExpiredToken(t *testing.T) {
 	if _, err := ts.Verify(token); err == nil {
 		t.Fatal("expected expired token to be rejected")
 	}
-}
-
-func flip(b byte) byte {
-	if b == 'a' {
-		return 'b'
-	}
-	return 'a'
 }
