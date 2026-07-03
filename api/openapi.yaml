@@ -8,6 +8,38 @@ info:
     This API is intentionally small and churn-friendly. Treat this file as the
     public contract for player-written clients. Server DTOs and handler stubs are
     generated from this file with oapi-codegen.
+
+    ## Game management
+
+    Everything up to (but not including) the game engine is implemented: creating
+    games, managing their lifecycle, and managing rosters. The engine — turns and
+    orders (`listTurns`, `getTurn`, `validateOrders`, `submitOrders`,
+    `getOrderSubmission`) — is still stubbed and answers `501 Not Implemented`.
+
+    Roles are global-admin, GM, and player. An **admin** creates games and has
+    god-mode over every game; admins never hold a membership. A **GM** or
+    **player** is a membership row on one game (a GM has elevated rights there).
+
+    A game's status advances along a forward-only chain, skips allowed:
+    `draft → recruiting → active → paused → complete → archived`. The only
+    backward move is `paused → active` (un-pause), which is admin-only, as is
+    moving a game out of `archived`; an archived game is otherwise frozen.
+
+    ### Typical create → recruit → activate workflow
+
+    1. `createGame` (admin) — a new game starts in `draft`.
+    2. `addGameMember` with `isGm: true` (admin) — assign the first GM.
+    3. `updateGame` `status: recruiting` (GM or admin) — open the game for players.
+    4. `addGameMember` (GM or admin) — add players; a net-new player may be added
+       only while `recruiting`. Omit `handle` to get the `player_N` default.
+    5. `updateGame` `status: active` (GM or admin) — begin play.
+
+    Later, `updateGame` moves the game on to `paused`, `complete`, or `archived`,
+    and `updateGameMember` reactivates, promotes, renames, or drops
+    (`isActive: false`) members. See each operation for its exact role and status
+    rules. The same offline bootstrap (create a game, assign its first GM) is
+    available without a running server via the `game-server database game` CLI
+    verbs.
 servers:
   - url: http://localhost:9987
     description: Local development server
@@ -19,7 +51,7 @@ tags:
   - name: Me
     description: Authenticated user context
   - name: Games
-    description: Game catalog and setup
+    description: Game catalog, lifecycle, and roster management
   - name: Turns
     description: Turn metadata and state
   - name: Orders
@@ -464,10 +496,14 @@ paths:
             schema:
               $ref: '#/components/schemas/UpdateGameRequest'
             examples:
-              advance:
-                summary: Advance the status (skips allowed)
+              openRecruiting:
+                summary: Open the game for players (draft → recruiting)
                 value:
                   status: recruiting
+              activate:
+                summary: Begin play (recruiting → active)
+                value:
+                  status: active
               rename:
                 summary: Edit metadata
                 value:
@@ -539,15 +575,15 @@ paths:
               $ref: '#/components/schemas/AddMemberRequest'
             examples:
               firstGm:
-                summary: Assign the first GM
+                summary: Assign the first GM (any status but archived)
                 value:
                   accountId: 2
                   handle: Overlord
                   isGm: true
               addPlayer:
-                summary: Add a player with a default handle
+                summary: Add a player with a default handle (recruiting only)
                 value:
-                  accountId: 5
+                  accountId: 3
       responses:
         '201':
           description: Member added
@@ -1024,6 +1060,12 @@ components:
     Game:
       type: object
       required: [id, code, name, status]
+      example:
+        id: 1
+        code: ALPHA
+        name: Alpha Campaign
+        status: recruiting
+        description: The first playtest game.
       properties:
         id:
           type: integer
@@ -1113,6 +1155,11 @@ components:
         (a game_account_role row), with its handle and role. A dropped member
         remains listed with isActive=false.
       required: [accountId, handle, isGm, isActive]
+      example:
+        accountId: 2
+        handle: Overlord
+        isGm: true
+        isActive: true
       properties:
         accountId:
           type: integer

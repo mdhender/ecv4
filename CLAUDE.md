@@ -46,12 +46,12 @@ middleware → handlers call the store → store runs SQL against the pool from
 `internal/database`.
 
 - **`internal/api`** — generated only. Transport DTOs; never use as domain/DB types.
-- **`internal/handlers`** — implements the generated `StrictServerInterface`. Thin adapters: auth/account handlers are real; the game handlers (`ListGames`, `GetTurn`, `SubmitOrders`, …) are deliberate stubs returning `errNotImplemented`, which `NewHTTPHandler`'s strict `ResponseErrorHandlerFunc` maps to **501** (not an empty 200). Malformed bodies → 400; other errors → 500 with the message hidden.
+- **`internal/handlers`** — implements the generated `StrictServerInterface`. Thin adapters: auth, account, and the **game-management** handlers (`ListGames`, `GetGame`, `CreateGame`, `UpdateGame`, `ListGameMembers`, `AddGameMember`, `UpdateGameMember`) are real. Only the **engine** handlers (`ListTurns`, `GetTurn`, `ValidateOrders`, `SubmitOrders`, `GetOrderSubmission`) remain deliberate stubs returning `errNotImplemented`, which `NewHTTPHandler`'s strict `ResponseErrorHandlerFunc` maps to **501** (not an empty 200). Malformed bodies → 400; other errors → 500 with the message hidden. The game-management authorization model (roles/status/visibility) is in the section below; game handlers live in `handlers/games.go`.
 - **`internal/store`** — typed query methods over a `sqlitemigration.Pool`. The only place SQL lives outside migrations. Returns `ErrNotFound` / `ErrConflict`; the hashed secret never leaves this layer.
 - **`internal/database`** — owns creation + migration. `Create` is the **only** function allowed to bring a DB file into existence; everything else uses `Open`, which refuses to create and runs pending migrations on every open (this is the upgrade path). `CreateMemory` / `CreateSharedMemory` back tests. Foreign keys are a per-connection PRAGMA set via `PrepareConn` on every pooled connection.
 - **`internal/auth`** — `TokenService` issues/verifies HS256 JWTs. Access tokens (15m) carry identity+roles; refresh tokens (24h) carry a distinct audience + a family id, are persisted, rotated on `/auth/refresh`, and revoked on `/auth/logout`. **Presenting an already-rotated refresh token revokes the whole family** (theft signal). Use `WithClock` to inject time in tests.
 - **`internal/httputil`** — request logging, request-id tagging, the raw-spec handler (`GET /openapi.yaml`), the opt-in embedded Swagger UI (`DocsHandler`, served at `/docs` only with `--allow-openapi-docs`), and the shared JSON error envelope (`{code, message, requestId?}`). Health is *not* here — it is the `GetHealth` strict handler in `handlers/server.go`.
-- **`internal/cli`** — the `game-server` command tree (`ff/v4`) and its business logic: `runServer` (mux + graceful shutdown + reaper), account verbs, and the development-admin seed. `cmd/game-server` only loads dotenv and calls `cli.App.Run`.
+- **`internal/cli`** — the `game-server` command tree (`ff/v4`) and its business logic: `runServer` (mux + graceful shutdown + reaper), the account verbs, the offline `database game` verbs (`game.go`), and the development-admin seed. `cmd/game-server` only loads dotenv and calls `cli.App.Run`.
 - **`internal/cerrs`** — `Error`, a string type for declaring package-level sentinel errors as constants.
 - **`internal/phrases`** — an xkcd-936-style passphrase generator, used to mint printable secrets for the account CLI verbs.
 
@@ -67,6 +67,46 @@ handlers/services, never in generated code. Handlers re-read fresh account state
 from the store rather than trusting token claims (an account may have been
 deactivated since issue).
 
+## Game-management model (reference)
+
+Everything on *this side of the game-engine line* is implemented — games,
+lifecycle, and rosters — while the engine (turns/orders) stays stubbed at 501.
+The authorization model lives in `handlers/games.go` (never in generated code);
+the store applies only integrity constraints and leaves the role/status gates to
+the handler.
+
+- **Roles.** *Admin* is global and god-mode: it creates games, sees every game
+  (including hard-hidden ones), and bypasses all status/role gates; an admin
+  never holds a game membership. *GM* and *player* are a `game_account_role` row
+  on one game (`is_gm` 1/0). *Assigned* = a row exists; *active* = the row is
+  active. Nothing is physically deleted — dropping sets `is_active = 0`.
+- **Status chain.** Linear, forward-only, skips allowed:
+  `draft → recruiting → active → paused → complete → archived`. Backward moves
+  are rejected (409) except `paused → active` (un-pause) and moving *out of*
+  `archived`, both **admin-only**. Only `archived` freezes a game — its sole
+  accepted change is an admin moving the status elsewhere.
+- **Action matrix** (who, and in which status window):
+  create game / assign first GM → admin; add GM or reactivate a member → active
+  GM or admin, any status but `archived`; add a net-new player or promote a
+  player → GM → active GM or admin, **`recruiting` only** (admins bypass the
+  window); self-deactivate (drop own role) → the member, any status; advance
+  status (forward) → active GM or admin; un-pause and set `isActive` (admin
+  hard-hide) → **admin only**.
+- **Handles.** Required, unique within a game. Caller-supplied or default
+  `player_N` where N = the game's current membership count + 1. A collision
+  (computed or supplied) **fails the add (409) — never auto-bumped**. A player
+  may rename only themselves, only while `recruiting`, and a player-supplied
+  handle may not begin with `player_` (reserved for the defaults; 400 otherwise).
+- **Visibility.** `ListGames` returns every game the caller was ever assigned to
+  (active or dropped) minus admin-hidden (`is_active = false`) games; an admin
+  sees all including hidden. `GetGame` is visible to anyone ever assigned while
+  the game is `is_active = true`, or to an admin. Roster reads (`ListGameMembers`)
+  gate on game visibility, then list every membership — active and dropped alike.
+- **Offline bootstrap.** The `database game` CLI verbs (create / list /
+  add-member / assign-gm) are the direct-DB analog of `database account create`:
+  they seed games and rosters with no running server and **no authorization
+  gate**, enforcing only store-level integrity — not the action matrix above.
+
 ## Migrations
 
 `internal/database/migrations.go` holds an ordered, **append-only** `[]string`.
@@ -80,9 +120,14 @@ games are never deleted (toggle `is_active`).
 The command tree lives in `internal/cli`; `cmd/game-server` is a thin shell.
 Root command with no subcommand runs the server. Subcommands:
 `version`, `database create <PATH>` (PATH is an existing dir, or `:memory:` to just
-verify migrations), and the `database account` verbs: `create`, `update`,
+verify migrations), the `database account` verbs: `create`, `update`,
 `reset-password` (a password-only alias for `update`), and `list` (read-only, no
-running server needed). The shared `--development` flag enables the
+running server needed); and the offline `database game` verbs: `create`
+(`--code --name [--description]`), `list` (read-only, includes hard-hidden
+games), `add-member` (`--code --email [--handle] [--is-gm]`), and `assign-gm` (a
+convenience alias for `add-member --is-gm`, mirroring `account reset-password`).
+The game verbs are an admin bootstrap: they enforce store-level integrity only,
+not the HTTP action matrix. The shared `--development` flag enables the
 `POST /admin/shutdown` route when serving and seeds a known admin with
 `database create`. The separate `--allow-openapi-docs` flag (independent of
 `--development`) serves the embedded Swagger UI at `/docs`. Config comes from

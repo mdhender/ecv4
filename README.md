@@ -17,8 +17,18 @@ RPC, gRPC, Connect, and GraphQL are intentionally out of scope. REST is preferre
 because players can exercise it with common HTTP tools and write clients in any
 language — Go, Python, JavaScript, shell, a spreadsheet — without adopting an RPC
 toolchain. The contract and its examples should be clear enough to authenticate,
-list games, fetch turns, validate orders, and submit orders without reading server
-source.
+manage games and rosters, and fetch turns without reading server source.
+
+## Status
+
+Authentication, account administration, and **game management** — creating games,
+their lifecycle (`draft → recruiting → active → paused → complete → archived`),
+and roster/membership management — are implemented and in the MVP. The game
+**engine** (turns, order validation, and submission) is intentionally still
+stubbed: those routes answer `501 Not Implemented`. The OpenAPI spec's
+`info.description` walks through the create → recruit → activate workflow, and the
+game-management authorization model (roles, status chain, visibility) is
+documented in [`CLAUDE.md`](CLAUDE.md).
 
 Agents working in this repo should also read [`CLAUDE.md`](CLAUDE.md), which covers
 the architecture internals and coding conventions in more depth.
@@ -33,7 +43,7 @@ internal/handlers/       Adapts HTTP/API DTOs to services; implements the strict
 internal/auth/           JWT issue/verify + bearer middleware
 internal/store/          Typed data-access layer over the SQLite pool
 internal/database/       Database create/open + append-only migrations
-internal/cli/            game-server command tree (serve + database/account verbs)
+internal/cli/            game-server command tree (serve + database/account/game verbs)
 cmd/game-server/         Thin process shell over internal/cli
 cmd/earl/                curl-like smoke-testing client for a running server
 docs/                    curl examples, MVP status, background notes
@@ -71,7 +81,16 @@ game-server database account create --email <e> [--is-admin] [--is-inactive] [--
 game-server database account update --email <e> [--is-active[=false]] [--is-admin[=false]] [--secret <s> | --generate-secret]
 game-server database account reset-password --email <e> [--secret <s> | --generate-secret]   # generates one if omitted
 game-server database account list            # print all accounts (id, active, admin, email); read-only, no server needed
+game-server database game create --code <CODE> --name <name> [--description <text>]          # create a game (draft, active)
+game-server database game list               # print all games incl. hidden (id, active, status, code, name); read-only
+game-server database game add-member --code <CODE> --email <e> [--handle <h>] [--is-gm]      # seed a roster member
+game-server database game assign-gm --code <CODE> --email <e> [--handle <h>]                 # add a GM (alias for add-member --is-gm)
 ```
+
+The `database game` verbs are an offline admin bootstrap — they seed games and
+rosters directly against the database file with no running server and no
+authorization gate (only store-level integrity is enforced), the direct-DB analog
+of `database account create`.
 
 The shared `--development` flag enables the `POST /admin/shutdown` route when
 serving and seeds a known admin when used with `database create`. The separate

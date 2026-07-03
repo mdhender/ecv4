@@ -116,6 +116,26 @@ The `/auth/*` endpoints authenticate via the request body and ignore the bearer
 token, so `earl` never reacts to *their* 401s by refreshing — a `401` from
 `/auth/login` is reported directly as bad credentials.
 
+## Dogfooding a game workflow
+
+With an admin session in place, `earl` walks the game-management surface end to
+end — create a game, assign its first GM, open recruiting, add a player, and
+start play. The `GET`s in between let you watch the roster and status change:
+
+```
+# authenticated as an admin (penny@example.com)
+$ earl post  /games '{"code":"ALPHA","name":"Alpha Campaign"}'            # 201, status: draft
+$ earl post  /games/1/members '{"accountId":2,"handle":"Overlord","isGm":true}'   # assign first GM
+$ earl patch /games/1 '{"status":"recruiting"}'                           # open for players
+$ earl post  /games/1/members '{"accountId":3}'                           # add a player (handle defaults to player_2)
+$ earl get   /games/1/members                                             # see the roster
+$ earl patch /games/1 '{"status":"active"}'                               # begin play
+```
+
+Adding a player is allowed only while `recruiting`; assigning a GM works in any
+status but `archived`. The engine routes (`/games/1/turns`, `.../orders:submit`,
+…) still answer `501` — that boundary is intentional.
+
 ## Environment
 
 Before parsing flags, `earl` loads `.env` files (via `internal/dotenv`) so the
