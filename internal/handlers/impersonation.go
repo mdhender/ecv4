@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"errors"
-	"net/http"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
@@ -27,15 +26,10 @@ func (s *Server) CreateImpersonation(ctx context.Context, request api.CreateImpe
 	if err != nil {
 		return nil, err
 	} else if authErr != nil {
-		status, code, message := authErr.response()
-		if status == http.StatusForbidden {
-			return api.CreateImpersonation403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: code, Message: message,
-			}}, nil
+		if authErr.forbidden {
+			return api.CreateImpersonation403JSONResponse{ForbiddenJSONResponse: authErr.forbiddenBody()}, nil
 		}
-		return api.CreateImpersonation401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: code, Message: message,
-		}}, nil
+		return api.CreateImpersonation401JSONResponse{UnauthorizedJSONResponse: authErr.unauthorizedBody()}, nil
 	}
 
 	if request.Body == nil {

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Experimental Game Server API
-  version: 0.3.0
+  version: 0.4.0
   description: |
     Contract-first REST API for an experimental Go game web server.
 

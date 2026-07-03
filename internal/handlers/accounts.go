@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"errors"
-	"net/http"
 	"strings"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -22,16 +21,19 @@ type adminAuthError struct {
 	message   string
 }
 
-// response maps the authorization failure to the HTTP status, machine-readable
-// code, and message an admin handler uses to build its operation-specific typed
-// response. Each admin route still constructs its own 401/403 wrapper (the
-// generated response types are operation-specific), but this keeps the
-// forbidden-vs-unauthorized decision and the code/message strings in one place.
-func (e *adminAuthError) response() (status int, code, message string) {
-	if e.forbidden {
-		return http.StatusForbidden, "forbidden", e.message
-	}
-	return http.StatusUnauthorized, "unauthorized", e.message
+// forbiddenBody and unauthorizedBody build the shared error envelopes an admin
+// handler embeds in its operation-specific 403/401 response. The generated
+// response types are per-operation, so each route still names its own
+// api.XxxNNNJSONResponse wrapper, but the code/message strings and the
+// forbidden-vs-unauthorized decision live here so every admin handler maps an
+// auth failure the same way (branch on authErr.forbidden). See the admin
+// handlers in accounts.go, server.go, impersonation.go, and games.go.
+func (e *adminAuthError) forbiddenBody() api.ForbiddenJSONResponse {
+	return api.ForbiddenJSONResponse{Code: "forbidden", Message: e.message}
+}
+
+func (e *adminAuthError) unauthorizedBody() api.UnauthorizedJSONResponse {
+	return api.UnauthorizedJSONResponse{Code: "unauthorized", Message: e.message}
 }
 
 // requireAdmin resolves the caller from the context claims and re-reads fresh
@@ -75,15 +77,10 @@ func (s *Server) GetAccount(ctx context.Context, request api.GetAccountRequestOb
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	} else if authErr != nil {
-		status, code, message := authErr.response()
-		if status == http.StatusForbidden {
-			return api.GetAccount403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: code, Message: message,
-			}}, nil
+		if authErr.forbidden {
+			return api.GetAccount403JSONResponse{ForbiddenJSONResponse: authErr.forbiddenBody()}, nil
 		}
-		return api.GetAccount401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: code, Message: message,
-		}}, nil
+		return api.GetAccount401JSONResponse{UnauthorizedJSONResponse: authErr.unauthorizedBody()}, nil
 	}
 
 	account, err := s.store.AccountByID(ctx, request.AccountId)
@@ -102,15 +99,10 @@ func (s *Server) ListAccounts(ctx context.Context, request api.ListAccountsReque
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	} else if authErr != nil {
-		status, code, message := authErr.response()
-		if status == http.StatusForbidden {
-			return api.ListAccounts403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: code, Message: message,
-			}}, nil
+		if authErr.forbidden {
+			return api.ListAccounts403JSONResponse{ForbiddenJSONResponse: authErr.forbiddenBody()}, nil
 		}
-		return api.ListAccounts401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: code, Message: message,
-		}}, nil
+		return api.ListAccounts401JSONResponse{UnauthorizedJSONResponse: authErr.unauthorizedBody()}, nil
 	}
 
 	accounts, err := s.store.ListAccounts(ctx)
@@ -129,15 +121,10 @@ func (s *Server) CreateAccount(ctx context.Context, request api.CreateAccountReq
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	} else if authErr != nil {
-		status, code, message := authErr.response()
-		if status == http.StatusForbidden {
-			return api.CreateAccount403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: code, Message: message,
-			}}, nil
+		if authErr.forbidden {
+			return api.CreateAccount403JSONResponse{ForbiddenJSONResponse: authErr.forbiddenBody()}, nil
 		}
-		return api.CreateAccount401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: code, Message: message,
-		}}, nil
+		return api.CreateAccount401JSONResponse{UnauthorizedJSONResponse: authErr.unauthorizedBody()}, nil
 	}
 
 	if request.Body == nil {
@@ -198,15 +185,10 @@ func (s *Server) UpdateAccount(ctx context.Context, request api.UpdateAccountReq
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	} else if authErr != nil {
-		status, code, message := authErr.response()
-		if status == http.StatusForbidden {
-			return api.UpdateAccount403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: code, Message: message,
-			}}, nil
+		if authErr.forbidden {
+			return api.UpdateAccount403JSONResponse{ForbiddenJSONResponse: authErr.forbiddenBody()}, nil
 		}
-		return api.UpdateAccount401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: code, Message: message,
-		}}, nil
+		return api.UpdateAccount401JSONResponse{UnauthorizedJSONResponse: authErr.unauthorizedBody()}, nil
 	}
 
 	if request.Body == nil {

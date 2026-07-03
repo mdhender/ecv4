@@ -7,7 +7,6 @@ package handlers
 import (
 	"context"
 	"errors"
-	"net/http"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -276,15 +275,10 @@ func (s *Server) ShutdownServer(ctx context.Context, request api.ShutdownServerR
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	} else if authErr != nil {
-		status, code, message := authErr.response()
-		if status == http.StatusForbidden {
-			return api.ShutdownServer403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: code, Message: message,
-			}}, nil
+		if authErr.forbidden {
+			return api.ShutdownServer403JSONResponse{ForbiddenJSONResponse: authErr.forbiddenBody()}, nil
 		}
-		return api.ShutdownServer401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: code, Message: message,
-		}}, nil
+		return api.ShutdownServer401JSONResponse{UnauthorizedJSONResponse: authErr.unauthorizedBody()}, nil
 	}
 
 	// Trigger the graceful shutdown, then return 202. The trigger only starts
@@ -300,15 +294,10 @@ func (s *Server) PurgeRefreshTokens(ctx context.Context, request api.PurgeRefres
 	if _, authErr, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	} else if authErr != nil {
-		status, code, message := authErr.response()
-		if status == http.StatusForbidden {
-			return api.PurgeRefreshTokens403JSONResponse{ForbiddenJSONResponse: api.ForbiddenJSONResponse{
-				Code: code, Message: message,
-			}}, nil
+		if authErr.forbidden {
+			return api.PurgeRefreshTokens403JSONResponse{ForbiddenJSONResponse: authErr.forbiddenBody()}, nil
 		}
-		return api.PurgeRefreshTokens401JSONResponse{UnauthorizedJSONResponse: api.UnauthorizedJSONResponse{
-			Code: code, Message: message,
-		}}, nil
+		return api.PurgeRefreshTokens401JSONResponse{UnauthorizedJSONResponse: authErr.unauthorizedBody()}, nil
 	}
 
 	// Purge everything already expired as of now (the token service's clock, so
@@ -321,23 +310,14 @@ func (s *Server) PurgeRefreshTokens(ctx context.Context, request api.PurgeRefres
 }
 
 func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api.GetMeResponseObject, error) {
-	// The bearer-auth middleware puts verified claims in the context; their
-	// absence means the request reached here unauthenticated.
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return unauthorized("missing credentials"), nil
-	}
-
-	// Read fresh account state rather than trusting the token: an account may
-	// have been deactivated or removed since the token was issued.
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return unauthorized("account no longer exists"), nil
-	case err != nil:
+	// Resolve the caller from the verified token, re-reading fresh account state
+	// so a since-deactivated or removed account is rejected.
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
 		return nil, err
-	case !account.IsActive:
-		return unauthorized("account is not active"), nil
+	}
+	if msg != "" {
+		return unauthorized(msg), nil
 	}
 
 	return api.GetMe200JSONResponse{
@@ -350,24 +330,14 @@ func (s *Server) GetMe(ctx context.Context, request api.GetMeRequestObject) (api
 }
 
 func (s *Server) ListMyGames(ctx context.Context, request api.ListMyGamesRequestObject) (api.ListMyGamesResponseObject, error) {
-	// Secured route: the bearer-auth middleware puts verified claims in the
-	// context; their absence means the request reached here unauthenticated.
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return myGamesUnauthorized("missing credentials"), nil
-	}
-
-	// Re-read fresh account state rather than trusting the token, like the other
-	// /me handlers: an account may have been deactivated or removed since the
-	// token was issued.
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return myGamesUnauthorized("account no longer exists"), nil
-	case err != nil:
+	// Resolve the caller from the verified token, re-reading fresh account state
+	// like the other /me handlers so a since-deactivated account is rejected.
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
 		return nil, err
-	case !account.IsActive:
-		return myGamesUnauthorized("account is not active"), nil
+	}
+	if msg != "" {
+		return myGamesUnauthorized(msg), nil
 	}
 
 	memberships, err := s.store.GamesForAccount(ctx, account.ID)
@@ -402,27 +372,18 @@ func myGamesUnauthorized(message string) api.ListMyGames401JSONResponse {
 // the account is revoked so a stolen refresh token cannot outlive the password it
 // was minted under.
 func (s *Server) ChangeMyPassword(ctx context.Context, request api.ChangeMyPasswordRequestObject) (api.ChangeMyPasswordResponseObject, error) {
-	// Secured route: the bearer-auth middleware puts verified claims in the
-	// context; their absence means the request reached here unauthenticated.
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return changePasswordUnauthorized("missing credentials"), nil
+	// Resolve the caller from the verified token, re-reading fresh account state
+	// like the other /me handlers: a since-deactivated or removed account may not
+	// change its password.
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if msg != "" {
+		return changePasswordUnauthorized(msg), nil
 	}
 	if request.Body == nil {
 		return changePasswordBadRequest("missing request body"), nil
-	}
-
-	// Re-read fresh account state rather than trusting the token, like the other
-	// /me handlers: an account may have been deactivated or removed since the
-	// token was issued, and such an account may not change its password.
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return changePasswordUnauthorized("account no longer exists"), nil
-	case err != nil:
-		return nil, err
-	case !account.IsActive:
-		return changePasswordUnauthorized("account is not active"), nil
 	}
 
 	// Verify the current password against the stored hash before applying the
@@ -531,19 +492,12 @@ func unauthorized(message string) api.GetMe401JSONResponse {
 // visibility itself; the handler only resolves the caller and, like the other
 // /me-style handlers, re-reads fresh account state rather than trusting the token.
 func (s *Server) ListGames(ctx context.Context, request api.ListGamesRequestObject) (api.ListGamesResponseObject, error) {
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return listGamesUnauthorized("missing credentials"), nil
-	}
-
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return listGamesUnauthorized("account no longer exists"), nil
-	case err != nil:
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
 		return nil, err
-	case !account.IsActive:
-		return listGamesUnauthorized("account is not active"), nil
+	}
+	if msg != "" {
+		return listGamesUnauthorized(msg), nil
 	}
 
 	games, err := s.store.ListGames(ctx, account.ID, account.IsAdmin, gameStatusFilter(request.Params.Status))
@@ -564,19 +518,12 @@ func (s *Server) ListGames(ctx context.Context, request api.ListGamesRequestObje
 // not admin-hidden. An unknown or not-visible game is a 404, so a non-admin
 // cannot distinguish a game that does not exist from one they may not see.
 func (s *Server) GetGame(ctx context.Context, request api.GetGameRequestObject) (api.GetGameResponseObject, error) {
-	claims, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
-		return getGameUnauthorized("missing credentials"), nil
-	}
-
-	account, err := s.store.AccountByID(ctx, claims.UserID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return getGameUnauthorized("account no longer exists"), nil
-	case err != nil:
+	account, msg, err := s.authenticatedAccount(ctx)
+	if err != nil {
 		return nil, err
-	case !account.IsActive:
-		return getGameUnauthorized("account is not active"), nil
+	}
+	if msg != "" {
+		return getGameUnauthorized(msg), nil
 	}
 
 	game, err := s.store.GameByID(ctx, request.GameId, account.ID, account.IsAdmin)
