@@ -48,12 +48,41 @@ middleware → handlers call the store → store runs SQL against the pool from
 - **`internal/api`** — generated only. Transport DTOs; never use as domain/DB types.
 - **`internal/handlers`** — implements the generated `StrictServerInterface`. Thin adapters: auth, account, and the **game-management** handlers (`ListGames`, `GetGame`, `CreateGame`, `UpdateGame`, `ListGameMembers`, `AddGameMember`, `UpdateGameMember`) are real. Only the **engine** handlers (`ListTurns`, `GetTurn`, `ValidateOrders`, `SubmitOrders`, `GetOrderSubmission`) remain deliberate stubs returning `errNotImplemented`, which `NewHTTPHandler`'s strict `ResponseErrorHandlerFunc` maps to **501** (not an empty 200). Malformed bodies → 400; other errors → 500 with the message hidden. The game-management authorization model (roles/status/visibility) is in the section below; game handlers live in `handlers/games.go`.
 - **`internal/store`** — typed query methods over a `sqlitemigration.Pool`. The only place SQL lives outside migrations. Returns `ErrNotFound` / `ErrConflict`; the hashed secret never leaves this layer.
+- **`internal/ec`** — the **game engine**: game simulation, rules, and state (seed → PRNG, turn/order resolution, initialization). No HTTP, no tokens, no auth. Engine-owned tables are `ec_`-prefixed. See "The app/engine line" below.
 - **`internal/database`** — owns creation + migration. `Create` is the **only** function allowed to bring a DB file into existence; everything else uses `Open`, which refuses to create and runs pending migrations on every open (this is the upgrade path). `CreateMemory` / `CreateSharedMemory` back tests. Foreign keys are a per-connection PRAGMA set via `PrepareConn` on every pooled connection.
 - **`internal/auth`** — `TokenService` issues/verifies HS256 JWTs. Access tokens (15m) carry identity+roles; refresh tokens (24h) carry a distinct audience + a family id, are persisted, rotated on `/auth/refresh`, and revoked on `/auth/logout`. **Presenting an already-rotated refresh token revokes the whole family** (theft signal). Use `WithClock` to inject time in tests.
 - **`internal/httputil`** — request logging, request-id tagging, the raw-spec handler (`GET /openapi.yaml`), the opt-in embedded Swagger UI (`DocsHandler`, served at `/docs` only with `--allow-openapi-docs`), and the shared JSON error envelope (`{code, message, requestId?}`). Health is *not* here — it is the `GetHealth` strict handler in `handlers/server.go`.
 - **`internal/cli`** — the `game-server` command tree (`ff/v4`) and its business logic: `runServer` (mux + graceful shutdown + reaper), the account verbs, the offline `database game` verbs (`game.go`), and the development-admin seed. `cmd/game-server` only loads dotenv and calls `cli.App.Run`.
 - **`internal/cerrs`** — `Error`, a string type for declaring package-level sentinel errors as constants.
 - **`internal/phrases`** — an xkcd-936-style passphrase generator, used to mint printable secrets for the account CLI verbs.
+
+## The app/engine line
+
+The codebase has two halves, split by the game-engine line:
+
+- **app** — the whole application server: transport (`internal/handlers`), auth,
+  `store`, `cli`, lifecycle. Everything that is *not* game simulation.
+- **engine** — the game simulation itself: `internal/ec` and its `ec_`-prefixed
+  tables. Game rules and state live here and nowhere else.
+
+An **engine handler** is an app-side handler that *exposes* an engine operation
+(game initialization now — `initializeGame`, `updateGameSeed`; turns/orders
+later). The contract between the halves is deliberately one-directional:
+
+- The engine handler **owns authentication and authorization** — it resolves the
+  caller, applies the role/status/visibility gates, and returns the 401/403/404/409
+  — then **forwards** the command to the engine. It contains no game rules.
+- The **engine assumes the actor is already authenticated and authorized**. It
+  does no auth of its own and will **always attempt to carry out** a command it is
+  handed. Never put an auth or ownership check inside `internal/ec`; that gate
+  belongs in the forwarding handler.
+
+So the flow for an engine operation is: handler authenticates + authorizes →
+handler forwards → engine executes unconditionally → handler shapes the result
+into the transport DTO. The engine handlers for turns/orders (`ListTurns`,
+`GetTurn`, `ValidateOrders`, `SubmitOrders`, `GetOrderSubmission`) are still 501
+stubs; game **initialization** is the first engine surface being built across the
+line (see the epic's sub-issues).
 
 ## Auth model (spec-driven)
 
